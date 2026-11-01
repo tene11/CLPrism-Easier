@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tene11 <tene11@localhost>
 Date: Sun, 1 Nov 2026 16:34:16 +0900
-Subject: [PATCH 5/5] Harden the Cleanroom download and install
+Subject: [PATCH 5/6] Harden the Cleanroom download and install
 
 - Only accept download URLs of the CleanroomMC/Cleanroom GitHub releases
   over HTTPS.

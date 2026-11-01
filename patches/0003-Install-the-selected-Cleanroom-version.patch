@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tene11 <tene11@localhost>
 Date: Sun, 1 Nov 2026 12:25:27 +0900
-Subject: [PATCH 3/5] Install the selected Cleanroom version
+Subject: [PATCH 3/6] Install the selected Cleanroom version
 
 Download the release's MMC instance zip and install it into the
 instance: its org.lwjgl (LWJGL 3) and net.minecraftforge (Cleanroom)
