@@ -52,8 +52,18 @@ try {
     Step "2/4 GitHub へのログイン"
     if ((ExitCodeOf gh auth status --hostname github.com) -ne 0) {
         Write-Host "  GitHub にログインします。表示されたコードをブラウザに入力してください。" -ForegroundColor Yellow
-        & gh auth login --hostname github.com --git-protocol https --web
+        & gh auth login --hostname github.com --git-protocol https --web --scopes workflow
         if ($LASTEXITCODE -ne 0) { throw "GitHub へのログインに失敗しました。" }
+    }
+    # .github/workflows を push するには "workflow" の権限が要る
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $authStatus = (& gh auth status --hostname github.com 2>&1 | Out-String)
+    $ErrorActionPreference = $saved
+    if ($authStatus -notmatch "workflow") {
+        Write-Host "  自動追従の設定ファイルを上げるため、GitHub の権限を追加します。ブラウザで許可してください。" -ForegroundColor Yellow
+        & gh auth refresh --hostname github.com --scopes workflow
+        if ($LASTEXITCODE -ne 0) { throw "GitHub の権限の追加に失敗しました。" }
     }
     Run gh auth setup-git
     $login = (& gh api user --jq .login).Trim()
@@ -87,10 +97,15 @@ try {
         } else {
             Run git push --set-upstream origin main
         }
+        # Prism の新バージョンを見つけた自動チェックが、プルリクエストを作れるようにする
+        Run gh api --method PUT "repos/$login/$RepoName/actions/permissions/workflow" -f default_workflow_permissions=write -F can_approve_pull_request_reviews=true
+
         $url = (& gh repo view --json url --jq .url).Trim()
         Write-Host ""
         Write-Host "完了しました: $url" -ForegroundColor Green
-        Start-Process $url
+        Write-Host "パッチが変わっていれば、GitHub が Windows 版のビルドを始めます (40〜90 分ほど)。" -ForegroundColor Green
+        Write-Host "終わると Releases に zip ができます。進み具合は開いたページ (Actions) で見られます。" -ForegroundColor Green
+        Start-Process "$url/actions"
     } finally {
         Pop-Location
     }

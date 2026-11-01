@@ -68,6 +68,13 @@ try {
         throw "ブランチ '$Branch' は既にあります。作り直す場合は -Force を付けてください（そのブランチの変更は消えます）。"
     }
 
+    # Prism の新しいバージョンに追従したとき、手元の clone にはまだそのタグが無い
+    & git rev-parse --verify --quiet "refs/tags/$tag" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Prism Launcher $tag を取得しています" -ForegroundColor Cyan
+        Invoke-Git fetch --no-tags origin "refs/tags/${tag}:refs/tags/${tag}"
+    }
+
     Write-Host "タグ $tag からブランチ '$Branch' を作成します" -ForegroundColor Cyan
     Invoke-Git switch --force-create $Branch $tag
     if ($normalize) {

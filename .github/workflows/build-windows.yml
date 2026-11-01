@@ -1,0 +1,143 @@
+# Builds Prism Launcher with the Cleanroom patches for Windows (MSVC, x64), the same way
+# Prism Launcher's own CI does, and packs it as a portable zip.
+#   - push to main that changes the patches -> publish the zip as a GitHub Release
+#   - called by follow-prism.yml           -> build the pull request branch to check a new Prism version
+#   - by hand from the Actions tab ("Run workflow")
+name: Build for Windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "patches/**"
+      - "PRISM_VERSION"
+      - ".github/workflows/build-windows.yml"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish the zip as a GitHub Release"
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      ref:
+        description: "Branch of this repository to build"
+        type: string
+        required: true
+      release:
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    concurrency:
+      group: build-windows-${{ inputs.ref || github.ref }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUILD_TYPE: Release
+      CMAKE_PRESET: windows_msvc
+
+    steps:
+      - name: Check out the patches
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          path: cleanroom
+
+      # Prism Launcher goes to the workspace root, where its own CI actions expect it
+      - name: Get Prism Launcher and apply the patches
+        id: source
+        run: |
+          tag="$(tr -d '[:space:]' < cleanroom/PRISM_VERSION)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git -C cleanroom rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git -C cleanroom rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          git init -q .
+          git config core.autocrlf false
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin https://github.com/PrismLauncher/PrismLauncher.git
+          git fetch -q --depth 1 origin "refs/tags/$tag:refs/tags/$tag"
+          git checkout -q "$tag"
+          git submodule update -q --init --recursive --depth 1
+          git am cleanroom/patches/*.patch
+
+      - name: Read the Qt version Prism Launcher uses for Windows
+        id: qt
+        run: |
+          version="$(grep -A8 'artifact-name: Windows-MSVC$' .github/workflows/build.yml | grep -m1 -oE 'qt-version: *[0-9][0-9.]*' | grep -oE '[0-9][0-9.]*$' || true)"
+          echo "version=${version:-6.10.2}" >> "$GITHUB_OUTPUT"
+
+      # libarchive, cmark & co. take a while to build; keep them between runs
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: vcpkg-windows-msvc-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/vcpkg-ports/**', 'cmake/vcpkg-triplets/**') }}
+          restore-keys: vcpkg-windows-msvc-
+
+      - name: Use the vcpkg cache
+        run: |
+          mkdir -p "$RUNNER_TEMP/vcpkg-cache"
+          echo "VCPKG_BINARY_SOURCES=clear;files,$(cygpath -w "$RUNNER_TEMP/vcpkg-cache"),readwrite" >> "$GITHUB_ENV"
+
+      - name: Set up Visual Studio, Java, vcpkg and Qt (Prism Launcher's own CI action)
+        uses: ./.github/actions/setup-dependencies
+        with:
+          build-type: ${{ env.BUILD_TYPE }}
+          artifact-name: Windows-MSVC
+          vcvars-arch: amd64
+          qt-version: ${{ steps.qt.outputs.version }}
+
+      - name: Configure
+        run: cmake --preset "$CMAKE_PRESET"
+
+      - name: Build
+        run: cmake --build --preset "$CMAKE_PRESET" --config "$BUILD_TYPE"
+
+      - name: Test
+        run: ctest --preset "$CMAKE_PRESET" --build-config "$BUILD_TYPE"
+
+      - name: Package as a portable zip
+        shell: pwsh
+        run: |
+          cmake --install build --config $env:BUILD_TYPE
+          cmake --install build --config $env:BUILD_TYPE --component portable
+          $name = "PrismLauncher-${{ steps.source.outputs.tag }}-Cleanroom-Windows-x64-${{ steps.source.outputs.short }}.zip"
+          Compress-Archive -Path install\* -DestinationPath $name
+          "ZIP_NAME=$name" | Out-File -Append $env:GITHUB_ENV
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrismLauncher-Cleanroom-Windows-x64
+          path: ${{ env.ZIP_NAME }}
+          retention-days: 30
+
+      - name: Publish a GitHub Release
+        if: github.event_name == 'push' || inputs.release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.source.outputs.tag }}
+          COMMIT: ${{ steps.source.outputs.commit }}
+          SHORT: ${{ steps.source.outputs.short }}
+        run: |
+          release="build-$TAG-$SHORT"
+          notes="Prism Launcher $TAG に Cleanroom のパッチを当てた Windows 版（ポータブル）です。
+
+          zip を展開して prismlauncher.exe を起動します。今使っている Prism（install フォルダ）の上に上書きで展開すると、
+          インスタンスやアカウントはそのまま引き継げます。"
+          if gh release view "$release" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$release" "$ZIP_NAME" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$release" "$ZIP_NAME" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" \
+              --title "Prism Launcher $TAG + Cleanroom ($SHORT)" --notes "$notes" --latest
+          fi

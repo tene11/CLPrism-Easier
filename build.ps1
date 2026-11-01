@@ -37,6 +37,21 @@ function Run {
 function Has($cmd) { [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
 try {
+    # GitHub で Prism の新バージョンへの追従 (プルリクエスト) をマージしていたら、それを取り込む
+    if ((Test-Path (Join-Path $root ".git")) -and (Has "git")) {
+        $saved = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & git -C $root remote get-url origin *> $null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "GitHub から最新のパッチを取り込みます..." -ForegroundColor Cyan
+            & git -C $root pull --ff-only 2>&1 | ForEach-Object { "$_" } | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "  取り込めませんでした (手元に未公開の変更があるかもしれません)。手元のパッチのままビルドします。" -ForegroundColor Yellow
+            }
+        }
+        $ErrorActionPreference = $saved
+    }
+
     # ------------------------------------------------------------------
     Step "1/7 Visual Studio 2022 (C++ ビルドツール)"
     $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
@@ -135,7 +150,7 @@ try {
     $src = Join-Path $root "PrismLauncher"
     # patches フォルダの中身が前回当てたものと違えば、当て直す (新しいパッチが届いたとき用)
     $patchFiles = @(Get-ChildItem (Join-Path $root "patches") -Filter *.patch | Sort-Object Name)
-    $patchHash = (($patchFiles | ForEach-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join ",")
+    $patchHash = ((@(Join-Path $root "PRISM_VERSION") + $patchFiles.FullName | ForEach-Object { (Get-FileHash $_ -Algorithm SHA256).Hash }) -join ",")
     $stamp = Join-Path $src ".git\cleanroom-patches.sha256"
     if (-not (Test-Path (Join-Path $src ".git"))) {
         & (Join-Path $root "apply.ps1") -Destination $src

@@ -6,3 +6,4 @@ build-log.txt
 # editor files
 .vscode/
 tempCodeRunnerFile.*
+.work/
