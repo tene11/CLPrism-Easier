@@ -1,0 +1,8 @@
+# build inputs and outputs (not part of the patch set)
+PrismLauncher/
+vcpkg/
+build-log.txt
+
+# editor files
+.vscode/
+tempCodeRunnerFile.*

@@ -1,0 +1,108 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tene11 <tene11@localhost>
+Date: Sun, 1 Nov 2026 12:25:27 +0900
+Subject: [PATCH 2/4] Add Cleanroom page to the Install Loader dialog
+
+The page lists Cleanroom versions from GitHub Releases. Installing the
+selected version is not implemented yet; OK only shows a notice.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013JsFfD4B8pB33N2PvMGY8s
+---
+ launcher/ui/dialogs/InstallLoaderDialog.cpp | 45 ++++++++++++++++++++-
+ 1 file changed, 43 insertions(+), 2 deletions(-)
+
+diff --git a/launcher/ui/dialogs/InstallLoaderDialog.cpp b/launcher/ui/dialogs/InstallLoaderDialog.cpp
+index 729b78f..9514819 100644
+--- a/launcher/ui/dialogs/InstallLoaderDialog.cpp
++++ b/launcher/ui/dialogs/InstallLoaderDialog.cpp
+@@ -27,6 +27,8 @@
+ #include "meta/Index.h"
+ #include "minecraft/MinecraftInstance.h"
+ #include "minecraft/PackProfile.h"
++#include "minecraft/cleanroom/CleanroomVersionList.h"
++#include "ui/dialogs/CustomMessageBox.h"
+ #include "ui/widgets/PageContainer.h"
+ #include "ui/widgets/VersionSelectWidget.h"
+ 
+@@ -56,11 +58,11 @@ class InstallLoaderPage : public VersionSelectWidget, public BasePage {
+         if (loaded)
+             return;
+ 
+-        const auto versions = APPLICATION->metadataIndex()->get(uid);
++        const auto versions = versionList();
+         if (!versions)
+             return;
+ 
+-        initialize(versions.get());
++        initialize(versions);
+         loaded = true;
+     }
+ 
+@@ -70,6 +72,11 @@ class InstallLoaderPage : public VersionSelectWidget, public BasePage {
+         connect(view(), &QAbstractItemView::doubleClicked, dialog, &QDialog::accept);
+     }
+ 
++   protected:
++    //! The list shown on this page. Loaders from the Prism meta server use the meta index;
++    //! pages with another source (Cleanroom) override this.
++    virtual BaseVersionList* versionList() { return APPLICATION->metadataIndex()->get(uid).get(); }
++
+    private:
+     const QString uid;
+     const QString iconName;
+@@ -77,6 +84,30 @@ class InstallLoaderPage : public VersionSelectWidget, public BasePage {
+     bool loaded = false;
+ };
+ 
++//! Cleanroom: a Forge 1.12.2 fork whose versions come from GitHub Releases instead of the meta server.
++class CleanroomLoaderPage : public InstallLoaderPage {
++    Q_OBJECT
++   public:
++    explicit CleanroomLoaderPage(PackProfile* profile)
++        : InstallLoaderPage(Cleanroom::PAGE_ID, "forge", tr("Cleanroom"), {}, profile), m_versions(new Cleanroom::VersionList(this))
++    {
++        const QString minecraftVersion = profile->getComponentVersion("net.minecraft");
++        if (minecraftVersion != Cleanroom::MINECRAFT_VERSION)
++            setEmptyString(tr("Cleanroom only supports Minecraft %1 (this instance uses %2)")
++                               .arg(QString(Cleanroom::MINECRAFT_VERSION), minecraftVersion));
++
++        // Cleanroom installs itself as "net.minecraftforge" named "Cleanroom"; highlight it if present
++        if (auto forge = profile->getComponent("net.minecraftforge"); forge && forge->getName() == "Cleanroom")
++            setCurrentVersion(forge->getVersion());
++    }
++
++   protected:
++    BaseVersionList* versionList() override { return m_versions; }
++
++   private:
++    Cleanroom::VersionList* m_versions;
++};
++
+ static InstallLoaderPage* pageCast(BasePage* page)
+ {
+     auto result = dynamic_cast<InstallLoaderPage*>(page);
+@@ -138,6 +169,8 @@ QList<BasePage*> InstallLoaderDialog::getPages()
+              new InstallLoaderPage("net.neoforged", "neoforged", tr("NeoForge"), {}, profile),
+              // Forge
+              new InstallLoaderPage("net.minecraftforge", "forge", tr("Forge"), {}, profile),
++             // Cleanroom
++             new CleanroomLoaderPage(profile),
+              // Fabric
+              new InstallLoaderPage("net.fabricmc.fabric-loader", "fabricmc", tr("Fabric"), Version("1.14"), profile),
+              // Quilt
+@@ -161,6 +194,14 @@ void InstallLoaderDialog::done(int result)
+ {
+     if (result == Accepted) {
+         auto* page = pageCast(container->selectedPage());
++        if (page->selectedVersion() && page->id() == Cleanroom::PAGE_ID) {
++            // TODO(stage 2): download the MMC instance zip and install its patches and libraries
++            CustomMessageBox::selectable(this, tr("Cleanroom"),
++                                         tr("Installing Cleanroom %1 is not implemented yet.").arg(page->selectedVersion()->descriptor()),
++                                         QMessageBox::Information)
++                ->exec();
++            return;
++        }
+         if (page->selectedVersion()) {
+             profile->setComponentVersion(page->id(), page->selectedVersion()->descriptor());
+             if (auto component = profile->getComponent(page->id())) {

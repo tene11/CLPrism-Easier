@@ -1,0 +1,561 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tene11 <tene11@localhost>
+Date: Sun, 1 Nov 2026 12:25:27 +0900
+Subject: [PATCH 3/4] Install the selected Cleanroom version
+
+Download the release's MMC instance zip and install it into the
+instance: its org.lwjgl (LWJGL 3) and net.minecraftforge (Cleanroom)
+patches replace the existing components and the empty stub jars go to
+the instance's local library folder.
+
+Ask before replacing a regular Forge install. Afterwards let automatic
+Java switching pick a compatible Java again, and warn when no Java
+version Cleanroom accepts is going to be used.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013JsFfD4B8pB33N2PvMGY8s
+---
+ launcher/CMakeLists.txt                       |   2 +
+ launcher/minecraft/PackProfile.cpp            |   5 +
+ launcher/minecraft/PackProfile.h              |   3 +
+ .../cleanroom/CleanroomInstallTask.cpp        | 248 ++++++++++++++++++
+ .../cleanroom/CleanroomInstallTask.h          |  84 ++++++
+ launcher/ui/dialogs/InstallLoaderDialog.cpp   | 120 ++++++++-
+ 6 files changed, 457 insertions(+), 5 deletions(-)
+ create mode 100644 launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
+ create mode 100644 launcher/minecraft/cleanroom/CleanroomInstallTask.h
+
+diff --git a/launcher/CMakeLists.txt b/launcher/CMakeLists.txt
+index 349d833..6957ae1 100644
+--- a/launcher/CMakeLists.txt
++++ b/launcher/CMakeLists.txt
+@@ -294,6 +294,8 @@ set(MINECRAFT_SOURCES
+     # Cleanroom (Forge 1.12.2 fork) support
+     minecraft/cleanroom/CleanroomVersionList.cpp
+     minecraft/cleanroom/CleanroomVersionList.h
++    minecraft/cleanroom/CleanroomInstallTask.cpp
++    minecraft/cleanroom/CleanroomInstallTask.h
+ 
+     minecraft/PackProfile.cpp
+     minecraft/PackProfile.h
+diff --git a/launcher/minecraft/PackProfile.cpp b/launcher/minecraft/PackProfile.cpp
+index f0cff7f..1dfd04a 100644
+--- a/launcher/minecraft/PackProfile.cpp
++++ b/launcher/minecraft/PackProfile.cpp
+@@ -264,6 +264,11 @@ RuntimeContext PackProfile::runtimeContext()
+     return d->m_instance->runtimeContext();
+ }
+ 
++MinecraftInstance* PackProfile::instance() const
++{
++    return d->m_instance;
++}
++
+ QString PackProfile::componentsFilePath() const
+ {
+     return FS::PathCombine(d->m_instance->instanceRoot(), "mmc-pack.json");
+diff --git a/launcher/minecraft/PackProfile.h b/launcher/minecraft/PackProfile.h
+index 70dd045..96edc31 100644
+--- a/launcher/minecraft/PackProfile.h
++++ b/launcher/minecraft/PackProfile.h
+@@ -142,6 +142,9 @@ class PackProfile : public QAbstractListModel {
+     /// helper method, returns RuntimeContext of instance
+     RuntimeContext runtimeContext();
+ 
++    /// the instance this profile belongs to
++    MinecraftInstance* instance() const;
++
+    signals:
+     void minecraftChanged();
+ 
+diff --git a/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp b/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
+new file mode 100644
+index 0000000..f9bb054
+--- /dev/null
++++ b/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
+@@ -0,0 +1,248 @@
++// SPDX-License-Identifier: GPL-3.0-only
++/*
++ *  Prism Launcher - Minecraft Launcher
++ *
++ *  This program is free software: you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation, version 3.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++#include "CleanroomInstallTask.h"
++
++#include <QDebug>
++#include <QDir>
++#include <QFile>
++#include <QFileInfo>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QJsonObject>
++
++#include <algorithm>
++
++#include "Application.h"
++#include "FileSystem.h"
++#include "MMCZip.h"
++#include "minecraft/Component.h"
++#include "minecraft/MinecraftInstance.h"
++#include "minecraft/PackProfile.h"
++#include "minecraft/ProfileUtils.h"
++#include "net/Download.h"
++
++namespace Cleanroom {
++
++namespace {
++constexpr auto CLEANROOM_UID = "net.minecraftforge";
++constexpr auto MINECRAFT_UID = "net.minecraft";
++
++QString describeProblems(const VersionFilePtr& file)
++{
++    QStringList lines;
++    for (const auto& problem : file->getProblems())
++        lines << problem.m_description;
++    return lines.join('\n');
++}
++}  // namespace
++
++// ---------------------------------------------------------------------------
++// Reading the extracted zip
++// ---------------------------------------------------------------------------
++
++std::optional<InstancePackage> readInstancePackage(const QString& extractedDir, QString* error)
++{
++    auto fail = [error](const QString& reason) -> std::optional<InstancePackage> {
++        if (error)
++            *error = reason;
++        return std::nullopt;
++    };
++
++    const QDir root(extractedDir);
++    const QDir patchesDir(root.filePath("patches"));
++    if (!patchesDir.exists())
++        return fail(QObject::tr("The downloaded file has no \"patches\" folder. Is it really a Cleanroom MMC instance zip?"));
++
++    // mmc-pack.json tells the component order (LWJGL first, then Cleanroom)
++    QStringList order;
++    QFile packFile(root.filePath("mmc-pack.json"));
++    if (packFile.open(QIODevice::ReadOnly)) {
++        const auto components = QJsonDocument::fromJson(packFile.readAll()).object().value("components").toArray();
++        for (const QJsonValue& component : components) {
++            const QString uid = component.toObject().value("uid").toString();
++            if (!uid.isEmpty() && !order.contains(uid))
++                order << uid;
++        }
++    } else {
++        qWarning() << "Cleanroom zip has no readable mmc-pack.json, installing patches in file name order";
++    }
++    // patches that mmc-pack.json doesn't mention still get installed, after the listed ones
++    for (const QFileInfo& info : patchesDir.entryInfoList({ "*.json" }, QDir::Files, QDir::Name)) {
++        if (!order.contains(info.completeBaseName()))
++            order << info.completeBaseName();
++    }
++
++    InstancePackage package;
++    for (const QString& uid : order) {
++        if (uid == MINECRAFT_UID)
++            continue;  // never replace Minecraft itself
++
++        const QString jsonPath = patchesDir.filePath(uid + ".json");
++        if (!QFileInfo::exists(jsonPath)) {
++            // listed in mmc-pack.json but resolved from the meta server: nothing to copy
++            qWarning() << "Cleanroom zip lists" << uid << "without a patch file, skipping it";
++            continue;
++        }
++
++        auto file = ProfileUtils::parseJsonFile(QFileInfo(jsonPath), false);
++        if (!file || file->getProblemSeverity() == ProblemSeverity::Error)
++            return fail(QObject::tr("Couldn't read %1 from the downloaded file:\n%2").arg(uid + ".json", file ? describeProblems(file) : QString()));
++        if (file->uid != uid)
++            return fail(QObject::tr("%1.json in the downloaded file declares the uid \"%2\".").arg(uid, file->uid));
++
++        package.patches.append({ uid, jsonPath, file });
++    }
++
++    const bool hasCleanroom =
++        std::any_of(package.patches.cbegin(), package.patches.cend(), [](const InstancePackage::Patch& patch) { return patch.uid == CLEANROOM_UID; });
++    if (!hasCleanroom)
++        return fail(QObject::tr("The downloaded file doesn't contain patches/%1.json.").arg(CLEANROOM_UID));
++
++    const QDir librariesDir(root.filePath("libraries"));
++    for (const QFileInfo& info : librariesDir.entryInfoList({ "*.jar" }, QDir::Files, QDir::Name))
++        package.libraryJars << info.absoluteFilePath();
++
++    return package;
++}
++
++// ---------------------------------------------------------------------------
++// Applying it to an instance
++// ---------------------------------------------------------------------------
++
++bool installPackage(PackProfile* profile, const InstancePackage& package, QString* error)
++{
++    auto fail = [error](const QString& reason) {
++        if (error)
++            *error = reason;
++        return false;
++    };
++
++    // 1. the empty stub jars that hide vanilla's LWJGL 2 & co. ("MMC-hint": "local" libraries)
++    const QString libDir = profile->instance()->getLocalLibraryPath();
++    if (!package.libraryJars.isEmpty() && !FS::ensureFolderPathExists(libDir)) {
++        return fail(QObject::tr("Couldn't create the folder %1.").arg(libDir));
++    }
++    for (const QString& jar : package.libraryJars) {
++        const QString target = FS::PathCombine(libDir, QFileInfo(jar).fileName());
++        if (QFileInfo::exists(target) && !QFile::remove(target)) {
++            return fail(QObject::tr("Couldn't replace %1.").arg(target));
++        }
++        if (!QFile::copy(jar, target)) {
++            return fail(QObject::tr("Couldn't copy %1 to %2.").arg(QFileInfo(jar).fileName(), libDir));
++        }
++    }
++
++    // 2. replace the components (Forge / LWJGL 2 -> Cleanroom / LWJGL 3)
++    for (const auto& patch : package.patches) {
++        if (profile->getComponent(patch.uid) && !profile->remove(patch.uid)) {
++            return fail(QObject::tr("Couldn't remove the existing %1 component.").arg(patch.uid));
++        }
++
++        const QString target = profile->patchFilePathForUid(patch.uid);
++        if (!FS::ensureFilePathExists(target) || (QFileInfo::exists(target) && !QFile::remove(target)) ||
++            !QFile::copy(patch.jsonPath, target)) {
++            return fail(QObject::tr("Couldn't write %1.").arg(target));
++        }
++
++        profile->appendComponent(makeShared<Component>(profile, patch.uid, patch.file));
++    }
++
++    profile->invalidateLaunchProfile();
++    profile->saveNow();
++    return true;
++}
++
++
++// ---------------------------------------------------------------------------
++// InstallTask
++// ---------------------------------------------------------------------------
++
++InstallTask::InstallTask(PackProfile* profile, Version::Ptr version) : Task(), m_profile(profile), m_version(std::move(version)) {}
++
++bool InstallTask::abort()
++{
++    if (m_job)
++        m_job->abort();
++    return Task::abort();
++}
++
++void InstallTask::executeTask()
++{
++    if (!m_profile || !m_version) {
++        emitFailed(tr("Nothing to install."));
++        return;
++    }
++    if (!m_tempDir.isValid()) {
++        emitFailed(tr("Couldn't create a temporary folder: %1").arg(m_tempDir.errorString()));
++        return;
++    }
++
++    setStatus(tr("Downloading Cleanroom %1...").arg(m_version->tag));
++    m_zipPath = m_tempDir.filePath("cleanroom.zip");
++
++    m_job = makeShared<NetJob>("Cleanroom::Install", APPLICATION->network());
++    m_job->addNetAction(Net::Download::makeFile(m_version->zipUrl, m_zipPath));
++
++    connect(m_job.get(), &NetJob::succeeded, this, &InstallTask::onDownloadSucceeded);
++    connect(m_job.get(), &NetJob::failed, this, [this](QString reason) {
++        m_job.reset();
++        emitFailed(tr("Couldn't download Cleanroom %1: %2").arg(m_version->tag, reason));
++    });
++    connect(m_job.get(), &NetJob::aborted, this, [this] {
++        m_job.reset();
++        emitAborted();
++    });
++    connect(m_job.get(), &NetJob::progress, this, &Task::setProgress);
++
++    m_job->start();
++}
++
++void InstallTask::onDownloadSucceeded()
++{
++    m_job.reset();
++    setStatus(tr("Installing Cleanroom %1...").arg(m_version->tag));
++
++    const QString extracted = m_tempDir.filePath("extracted");
++    if (!MMCZip::extractDir(m_zipPath, extracted)) {
++        emitFailed(tr("Couldn't extract the downloaded Cleanroom zip."));
++        return;
++    }
++
++    QString error;
++    const auto package = readInstancePackage(extracted, &error);
++    if (!package) {
++        emitFailed(error);
++        return;
++    }
++
++    if (!m_profile) {
++        emitFailed(tr("The instance went away during the installation."));
++        return;
++    }
++    if (!installPackage(m_profile.data(), *package, &error)) {
++        emitFailed(error);
++        return;
++    }
++    for (const auto& patch : package->patches) {
++        if (patch.uid == CLEANROOM_UID)
++            m_installedCleanroom = patch.file;
++    }
++    emitSucceeded();
++}
++
++}  // namespace Cleanroom
+diff --git a/launcher/minecraft/cleanroom/CleanroomInstallTask.h b/launcher/minecraft/cleanroom/CleanroomInstallTask.h
+new file mode 100644
+index 0000000..4edd7e2
+--- /dev/null
++++ b/launcher/minecraft/cleanroom/CleanroomInstallTask.h
+@@ -0,0 +1,84 @@
++// SPDX-License-Identifier: GPL-3.0-only
++/*
++ *  Prism Launcher - Minecraft Launcher
++ *
++ *  This program is free software: you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation, version 3.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <QPointer>
++#include <QStringList>
++#include <QTemporaryDir>
++
++#include <optional>
++
++#include "minecraft/VersionFile.h"
++#include "minecraft/cleanroom/CleanroomVersionList.h"
++#include "net/NetJob.h"
++#include "tasks/Task.h"
++
++class PackProfile;
++
++namespace Cleanroom {
++
++//! The components of a Cleanroom MMC instance zip, checked and ready to be installed.
++struct InstancePackage {
++    struct Patch {
++        QString uid;
++        QString jsonPath;  //!< patches/<uid>.json inside the extracted zip
++        VersionFilePtr file;
++    };
++    QList<Patch> patches;     //!< in the order of the zip's mmc-pack.json (org.lwjgl before net.minecraftforge)
++    QStringList libraryJars;  //!< libraries/*.jar inside the extracted zip (the "999999.0-empty" stubs)
++};
++
++//! Read and validate an extracted Cleanroom MMC instance zip.
++//! On failure returns std::nullopt and writes the reason to \p error.
++std::optional<InstancePackage> readInstancePackage(const QString& extractedDir, QString* error);
++
++//! Install a package into \p profile: copy the stub jars to the instance's local library folder and
++//! replace the components with the package's patches. On failure writes the reason to \p error.
++bool installPackage(PackProfile* profile, const InstancePackage& package, QString* error);
++
++//! Downloads a Cleanroom MMC instance zip and installs its components into a PackProfile:
++//! the bundled org.lwjgl (LWJGL 3) and net.minecraftforge (Cleanroom) patches replace the existing
++//! components, and the empty stub jars go to the instance's local library folder.
++//! The caller should resolve the profile afterwards.
++class InstallTask : public Task {
++    Q_OBJECT
++   public:
++    InstallTask(PackProfile* profile, Version::Ptr version);
++
++    bool canAbort() const override { return true; }
++    bool abort() override;
++
++    //! The installed Cleanroom patch, valid after the task succeeded.
++    VersionFilePtr installedCleanroom() const { return m_installedCleanroom; }
++
++   protected:
++    void executeTask() override;
++
++   private slots:
++    void onDownloadSucceeded();
++
++   private:
++    QPointer<PackProfile> m_profile;
++    Version::Ptr m_version;
++    NetJob::Ptr m_job;
++    QTemporaryDir m_tempDir;
++    QString m_zipPath;
++    VersionFilePtr m_installedCleanroom;
++};
++
++}  // namespace Cleanroom
+diff --git a/launcher/ui/dialogs/InstallLoaderDialog.cpp b/launcher/ui/dialogs/InstallLoaderDialog.cpp
+index 9514819..7a18503 100644
+--- a/launcher/ui/dialogs/InstallLoaderDialog.cpp
++++ b/launcher/ui/dialogs/InstallLoaderDialog.cpp
+@@ -27,8 +27,12 @@
+ #include "meta/Index.h"
+ #include "minecraft/MinecraftInstance.h"
+ #include "minecraft/PackProfile.h"
++#include "java/JavaInstall.h"
++#include "java/JavaInstallList.h"
++#include "minecraft/cleanroom/CleanroomInstallTask.h"
+ #include "minecraft/cleanroom/CleanroomVersionList.h"
+ #include "ui/dialogs/CustomMessageBox.h"
++#include "ui/dialogs/ProgressDialog.h"
+ #include "ui/widgets/PageContainer.h"
+ #include "ui/widgets/VersionSelectWidget.h"
+ 
+@@ -108,6 +112,112 @@ class CleanroomLoaderPage : public InstallLoaderPage {
+     Cleanroom::VersionList* m_versions;
+ };
+ 
++//! Ask before Cleanroom replaces a regular Forge install. Replacing an older Cleanroom needs no question.
++static bool confirmForgeReplacement(QWidget* parent, PackProfile* profile, const QString& cleanroomVersion)
++{
++    const auto forge = profile->getComponent("net.minecraftforge");
++    if (!forge || forge->getName() == "Cleanroom")
++        return true;
++
++    const auto answer = CustomMessageBox::selectable(parent, QObject::tr("Replace Forge?"),
++                                                     QObject::tr("This instance has %1 %2 installed.\n"
++                                                                 "Installing Cleanroom %3 will replace it.\n\n"
++                                                                 "Do you want to continue?")
++                                                         .arg(forge->getName(), forge->getVersion(), cleanroomVersion),
++                                                     QMessageBox::Question, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
++                            ->exec();
++    return answer == QMessageBox::Yes;
++}
++
++//! Cleanroom needs a much newer Java than Forge 1.12.2.
++//! Let the automatic Java mechanism pick again (like Prism does after a Minecraft version change),
++//! then warn if no compatible Java is going to be used.
++static void checkCleanroomJava(QWidget* parent, PackProfile* profile, const QString& cleanroomVersion, const VersionFilePtr& cleanroom)
++{
++    if (!cleanroom || cleanroom->compatibleJavaMajors.isEmpty())
++        return;
++    const QList<int> majors = cleanroom->compatibleJavaMajors;
++
++    auto* instance = profile->instance();
++    auto settings = instance->settings();
++    const bool autoSwitch = APPLICATION->settings()->get("AutomaticJavaSwitch").toBool();
++    const bool autoDownload = APPLICATION->settings()->get("AutomaticJavaDownload").toBool();
++
++    // forget the Java that was chosen automatically for Forge, so a compatible one is chosen on the next launch
++    if (autoSwitch && settings->get("AutomaticJava").toBool() && settings->get("OverrideJavaLocation").toBool()) {
++        settings->set("OverrideJavaLocation", false);
++        settings->set("JavaPath", "");
++    }
++
++    bool found = false;
++    QString fixedJava;
++    if (!autoSwitch || settings->get("OverrideJavaLocation").toBool()) {
++        // a fixed Java (set on the instance, or the global one) is used as is
++        const auto java = instance->getJavaVersion();
++        found = majors.contains(java.major());
++        if (java.major() > 0)
++            fixedJava = java.toString();
++    } else if (autoDownload) {
++        return;  // Prism downloads a compatible Java on launch
++    } else {
++        // Prism picks a compatible Java among the detected ones on launch: check that there is one
++        auto javas = APPLICATION->javalist();
++        auto task = javas->getLoadTask();
++        ProgressDialog progress(parent);
++        progress.execWithTask(task.get());
++        for (int i = 0; i < javas->count(); i++) {
++            const auto java = std::dynamic_pointer_cast<JavaInstall>(javas->at(i));
++            if (java && majors.contains(java->id.major())) {
++                found = true;
++                break;
++            }
++        }
++    }
++    if (found)
++        return;
++
++    QStringList majorNames;
++    for (int major : majors)
++        majorNames << QString::number(major);
++    const QString needed = majorNames.join(QObject::tr(" or "));
++
++    const QString text = fixedJava.isEmpty()
++                             ? QObject::tr("Cleanroom %1 needs Java %2, but it wasn't found on this computer.\n\n"
++                                           "Install Java %2, or turn on automatic Java download in Settings > Java.")
++                                   .arg(cleanroomVersion, needed)
++                             : QObject::tr("Cleanroom %1 needs Java %2, but this instance is set to use Java %3.\n\n"
++                                           "Change it in the instance's Settings > Java before launching.")
++                                   .arg(cleanroomVersion, needed, fixedJava);
++    CustomMessageBox::selectable(parent, QObject::tr("Java %1 is needed").arg(needed), text, QMessageBox::Warning)->exec();
++}
++
++//! Download the selected Cleanroom version and install it. Returns false if it was cancelled or failed.
++static bool installCleanroom(QWidget* parent, PackProfile* profile, const BaseVersion::Ptr& selected)
++{
++    const auto version = std::dynamic_pointer_cast<Cleanroom::Version>(selected);
++    if (!version)
++        return false;
++
++    if (!confirmForgeReplacement(parent, profile, version->tag))
++        return false;
++
++    auto task = makeShared<Cleanroom::InstallTask>(profile, version);
++    ProgressDialog progress(parent);
++    progress.execWithTask(task.get());
++    if (!task->wasSuccessful()) {
++        if (!task->failReason().isEmpty())  // empty when the user cancelled
++            CustomMessageBox::selectable(parent, QObject::tr("Error"),
++                                         QObject::tr("Couldn't install Cleanroom %1:\n%2").arg(version->tag, task->failReason()),
++                                         QMessageBox::Critical)
++                ->exec();
++        return false;
++    }
++
++    profile->resolve(Net::Mode::Online);
++    checkCleanroomJava(parent, profile, version->tag, task->installedCleanroom());
++    return true;
++}
++
+ static InstallLoaderPage* pageCast(BasePage* page)
+ {
+     auto result = dynamic_cast<InstallLoaderPage*>(page);
+@@ -195,11 +305,11 @@ void InstallLoaderDialog::done(int result)
+     if (result == Accepted) {
+         auto* page = pageCast(container->selectedPage());
+         if (page->selectedVersion() && page->id() == Cleanroom::PAGE_ID) {
+-            // TODO(stage 2): download the MMC instance zip and install its patches and libraries
+-            CustomMessageBox::selectable(this, tr("Cleanroom"),
+-                                         tr("Installing Cleanroom %1 is not implemented yet.").arg(page->selectedVersion()->descriptor()),
+-                                         QMessageBox::Information)
+-                ->exec();
++            // Cleanroom isn't on the meta server: download its MMC instance zip and install the components from it.
++            // Keep the dialog open if that was cancelled or failed.
++            if (!installCleanroom(this, profile, page->selectedVersion()))
++                return;
++            QDialog::done(result);
+             return;
+         }
+         if (page->selectedVersion()) {

@@ -1,0 +1,4 @@
+# Patch files must keep LF line endings, otherwise "git am" fails on Windows
+*.patch -text
+PRISM_VERSION text eol=lf
+*.ps1 text eol=crlf

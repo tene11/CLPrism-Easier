@@ -1,0 +1,510 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tene11 <tene11@localhost>
+Date: Sun, 1 Nov 2026 12:25:27 +0900
+Subject: [PATCH 1/4] Add Cleanroom version list backed by GitHub Releases
+
+Cleanroom (a Forge 1.12.2 fork) is not on the Prism meta server, so
+fetch its releases from the GitHub API and expose the ones that ship
+an MMC instance zip as a BaseVersionList.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013JsFfD4B8pB33N2PvMGY8s
+---
+ launcher/CMakeLists.txt                       |   5 +
+ .../cleanroom/CleanroomVersionList.cpp        | 240 ++++++++++++++++++
+ .../cleanroom/CleanroomVersionList.h          | 118 +++++++++
+ tests/CMakeLists.txt                          |   3 +
+ tests/CleanroomVersionList_test.cpp           |  64 +++++
+ .../CleanroomVersionList/releases.json        | Bin 0 -> 2125 bytes
+ 6 files changed, 430 insertions(+)
+ create mode 100644 launcher/minecraft/cleanroom/CleanroomVersionList.cpp
+ create mode 100644 launcher/minecraft/cleanroom/CleanroomVersionList.h
+ create mode 100644 tests/CleanroomVersionList_test.cpp
+ create mode 100644 tests/testdata/CleanroomVersionList/releases.json
+
+diff --git a/launcher/CMakeLists.txt b/launcher/CMakeLists.txt
+index fa710ab..349d833 100644
+--- a/launcher/CMakeLists.txt
++++ b/launcher/CMakeLists.txt
+@@ -290,6 +290,11 @@ set(MINECRAFT_SOURCES
+     minecraft/LaunchProfile.h
+     minecraft/Component.cpp
+     minecraft/Component.h
++
++    # Cleanroom (Forge 1.12.2 fork) support
++    minecraft/cleanroom/CleanroomVersionList.cpp
++    minecraft/cleanroom/CleanroomVersionList.h
++
+     minecraft/PackProfile.cpp
+     minecraft/PackProfile.h
+     minecraft/ComponentUpdateTask.cpp
+diff --git a/launcher/minecraft/cleanroom/CleanroomVersionList.cpp b/launcher/minecraft/cleanroom/CleanroomVersionList.cpp
+new file mode 100644
+index 0000000..5ac8802
+--- /dev/null
++++ b/launcher/minecraft/cleanroom/CleanroomVersionList.cpp
+@@ -0,0 +1,240 @@
++// SPDX-License-Identifier: GPL-3.0-only
++/*
++ *  Prism Launcher - Minecraft Launcher
++ *
++ *  This program is free software: you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation, version 3.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++#include "CleanroomVersionList.h"
++
++#include <QDebug>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QJsonParseError>
++
++#include "Application.h"
++#include "meta/VersionList.h"
++#include "net/Download.h"
++
++namespace Cleanroom {
++
++// ---------------------------------------------------------------------------
++// Version
++// ---------------------------------------------------------------------------
++
++QString Version::typeString() const
++{
++    if (prerelease)
++        return QObject::tr("Pre-release");
++    // Cleanroom marks its maturity in the tag ("0.7.11-alpha") instead of the GitHub pre-release flag
++    if (tag.contains("alpha", Qt::CaseInsensitive))
++        return QObject::tr("Alpha");
++    if (tag.contains("beta", Qt::CaseInsensitive))
++        return QObject::tr("Beta");
++    return QObject::tr("Release");
++}
++
++// ---------------------------------------------------------------------------
++// VersionListLoadTask
++// ---------------------------------------------------------------------------
++
++VersionListLoadTask::VersionListLoadTask(VersionList* list) : Task(), m_list(list) {}
++
++bool VersionListLoadTask::abort()
++{
++    if (m_job)
++        m_job->abort();
++    return Task::abort();
++}
++
++void VersionListLoadTask::executeTask()
++{
++    setStatus(tr("Fetching Cleanroom releases from GitHub..."));
++
++    m_job = makeShared<NetJob>("Cleanroom::VersionList", APPLICATION->network());
++    auto [download, response] = Net::Download::makeByteArray(QUrl(RELEASES_URL));
++    m_response = response;
++    m_job->addNetAction(download);
++
++    connect(m_job.get(), &NetJob::succeeded, this, &VersionListLoadTask::onDownloadSucceeded);
++    connect(m_job.get(), &NetJob::failed, this, [this](QString reason) {
++        m_job.reset();
++        emitFailed(tr("Couldn't fetch the Cleanroom release list from GitHub: %1").arg(reason));
++    });
++    connect(m_job.get(), &NetJob::aborted, this, [this] {
++        m_job.reset();
++        emitAborted();
++    });
++    connect(m_job.get(), &NetJob::progress, this, &Task::setProgress);
++
++    m_job->start();
++}
++
++void VersionListLoadTask::onDownloadSucceeded()
++{
++    // move the data out first: the buffer belongs to the NetJob
++    const QByteArray data = std::move(*m_response);
++    m_response = nullptr;
++    m_job.reset();
++
++    QString error;
++    auto versions = VersionList::parseReleases(data, &error);
++    if (!error.isEmpty()) {
++        emitFailed(error);
++        return;
++    }
++
++    if (m_list)
++        m_list->setVersions(std::move(versions));
++    emitSucceeded();
++}
++
++// ---------------------------------------------------------------------------
++// VersionList
++// ---------------------------------------------------------------------------
++
++VersionList::VersionList(QObject* parent) : BaseVersionList(parent) {}
++
++Task::Ptr VersionList::getLoadTask([[maybe_unused]] bool forceReload)
++{
++    // reuse a running load instead of hitting the GitHub API twice.
++    // VersionSelectWidget only asks for a task when the list isn't loaded yet or on "Refresh",
++    // so every other call should fetch again.
++    if (m_loadTask && m_loadTask->isRunning())
++        return m_loadTask;
++
++    m_loadTask = makeShared<VersionListLoadTask>(this);
++    return m_loadTask;
++}
++
++QVariant VersionList::data(const QModelIndex& index, int role) const
++{
++    if (!index.isValid() || index.row() < 0 || index.row() >= count())
++        return {};
++
++    const auto& version = m_versions.at(index.row());
++    switch (role) {
++        case VersionPointerRole:
++            return QVariant::fromValue(std::static_pointer_cast<BaseVersion>(version));
++        case VersionRole:
++        case VersionIdRole:
++            return version->tag;
++        case ParentVersionRole:
++            // lets the dialog's "same Minecraft version" filter hide Cleanroom on non-1.12.2 instances
++            return QString(MINECRAFT_VERSION);
++        case TypeRole:
++            return version->typeString();
++        case RecommendedRole:
++            return version->tag == m_recommendedTag;
++        case LatestRole:
++            return index.row() == 0;
++        case Meta::VersionList::TimeRole:
++            return version->publishedAt;
++        case SortRole:
++            return version->publishedAt.toMSecsSinceEpoch();
++        default:
++            return {};
++    }
++}
++
++BaseVersionList::RoleList VersionList::providesRoles() const
++{
++    return { VersionPointerRole, VersionRole,     VersionIdRole, ParentVersionRole,           TypeRole,
++             RecommendedRole,    LatestRole,      SortRole,      Meta::VersionList::TimeRole };
++}
++
++Version::Ptr VersionList::findCleanroomVersion(const QString& tag) const
++{
++    for (const auto& version : m_versions) {
++        if (version->tag == tag)
++            return version;
++    }
++    return nullptr;
++}
++
++void VersionList::setVersions(QList<Version::Ptr> versions)
++{
++    beginResetModel();
++    m_versions = std::move(versions);
++
++    // recommend the newest release that isn't flagged as a GitHub pre-release
++    m_recommendedTag.clear();
++    for (const auto& version : m_versions) {
++        if (!version->prerelease) {
++            m_recommendedTag = version->tag;
++            break;
++        }
++    }
++
++    m_loaded = true;
++    endResetModel();
++}
++
++QList<Version::Ptr> VersionList::parseReleases(const QByteArray& json, QString* error)
++{
++    QJsonParseError parseError{};
++    const QJsonDocument doc = QJsonDocument::fromJson(json, &parseError);
++    if (parseError.error != QJsonParseError::NoError) {
++        if (error)
++            *error = tr("Couldn't parse the GitHub response: %1").arg(parseError.errorString());
++        return {};
++    }
++
++    if (!doc.isArray()) {
++        // GitHub answers with {"message": "..."} on errors such as rate limiting
++        const QString message = doc.object().value("message").toString();
++        if (error)
++            *error = message.isEmpty() ? tr("Unexpected response from GitHub.") : tr("GitHub: %1").arg(message);
++        return {};
++    }
++
++    QList<Version::Ptr> result;
++    for (const QJsonValue& releaseValue : doc.array()) {
++        const QJsonObject release = releaseValue.toObject();
++        if (release.value("draft").toBool())
++            continue;
++
++        const QString tag = release.value("tag_name").toString();
++        if (tag.isEmpty())
++            continue;
++
++        // Find the MMC instance zip. Its name has changed between releases
++        // ("Cleanroom-MMC-instance-*.zip", "cleanroom-<version>.zip"), so match loosely and prefer "mmc".
++        QJsonObject zipAsset;
++        for (const QJsonValue& assetValue : release.value("assets").toArray()) {
++            const QJsonObject asset = assetValue.toObject();
++            const QString name = asset.value("name").toString().toLower();
++            if (!name.endsWith(".zip") || !name.contains("cleanroom"))
++                continue;
++            if (zipAsset.isEmpty() || name.contains("mmc"))
++                zipAsset = asset;
++        }
++        if (zipAsset.isEmpty()) {
++            qDebug() << "Cleanroom release" << tag << "has no MMC instance zip, skipping";
++            continue;
++        }
++
++        auto version = std::make_shared<Version>();
++        version->tag = tag;
++        version->publishedAt = QDateTime::fromString(release.value("published_at").toString(), Qt::ISODate);
++        version->prerelease = release.value("prerelease").toBool();
++        version->zipUrl = QUrl(zipAsset.value("browser_download_url").toString());
++        version->zipName = zipAsset.value("name").toString();
++        version->zipSize = zipAsset.value("size").toVariant().toLongLong();
++        result.append(version);
++    }
++    return result;
++}
++
++}  // namespace Cleanroom
+diff --git a/launcher/minecraft/cleanroom/CleanroomVersionList.h b/launcher/minecraft/cleanroom/CleanroomVersionList.h
+new file mode 100644
+index 0000000..57db94d
+--- /dev/null
++++ b/launcher/minecraft/cleanroom/CleanroomVersionList.h
+@@ -0,0 +1,118 @@
++// SPDX-License-Identifier: GPL-3.0-only
++/*
++ *  Prism Launcher - Minecraft Launcher
++ *
++ *  This program is free software: you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation, version 3.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <QDateTime>
++#include <QList>
++#include <QPointer>
++#include <QUrl>
++
++#include "BaseVersion.h"
++#include "BaseVersionList.h"
++#include "net/NetJob.h"
++#include "tasks/Task.h"
++
++namespace Cleanroom {
++
++//! ID of the "Cleanroom" page in the Install Loader dialog.
++//! Cleanroom itself installs as the "net.minecraftforge" component, so this is NOT a component uid.
++constexpr auto PAGE_ID = "cleanroom";
++
++//! The only Minecraft version Cleanroom supports.
++constexpr auto MINECRAFT_VERSION = "1.12.2";
++
++//! GitHub API endpoint listing Cleanroom releases (newest first).
++constexpr auto RELEASES_URL = "https://api.github.com/repos/CleanroomMC/Cleanroom/releases?per_page=100";
++
++//! One Cleanroom release on GitHub that ships a MultiMC/Prism instance zip.
++class Version : public BaseVersion {
++   public:
++    using Ptr = std::shared_ptr<Version>;
++
++    QString descriptor() const override { return tag; }
++    QString name() const override { return tag; }
++    QString typeString() const override;
++
++    QString tag;            //!< release tag, e.g. "0.7.11-alpha" (same as the component version)
++    QDateTime publishedAt;  //!< when the release was published
++    bool prerelease = false;
++    QUrl zipUrl;      //!< download URL of the MMC instance zip
++    QString zipName;  //!< file name of the MMC instance zip
++    qint64 zipSize = 0;
++};
++
++class VersionList;
++
++//! Downloads the release list from GitHub and fills a VersionList with it.
++class VersionListLoadTask : public Task {
++    Q_OBJECT
++   public:
++    explicit VersionListLoadTask(VersionList* list);
++
++    bool canAbort() const override { return true; }
++    bool abort() override;
++
++   protected:
++    void executeTask() override;
++
++   private slots:
++    void onDownloadSucceeded();
++
++   private:
++    QPointer<VersionList> m_list;
++    NetJob::Ptr m_job;
++    QByteArray* m_response = nullptr;
++};
++
++//! Version list for the "Cleanroom" page, backed by GitHub Releases instead of the Prism meta server.
++class VersionList : public BaseVersionList {
++    Q_OBJECT
++   public:
++    explicit VersionList(QObject* parent = nullptr);
++
++    Task::Ptr getLoadTask(bool forceReload = false) override;
++    bool isLoaded() override { return m_loaded; }
++    const BaseVersion::Ptr at(int i) const override { return m_versions.at(i); }
++    int count() const override { return static_cast<int>(m_versions.count()); }
++    void sortVersions() override {}  // sorted through SortRole (publish time)
++
++    QVariant data(const QModelIndex& index, int role) const override;
++    RoleList providesRoles() const override;
++
++    //! Find a version by its release tag. Returns nullptr if it isn't in the list.
++    Version::Ptr findCleanroomVersion(const QString& tag) const;
++
++    //! Parse the JSON returned by the GitHub releases API.
++    //! Releases without an MMC instance zip are skipped.
++    //! On failure, returns an empty list and writes the reason to \p error.
++    static QList<Version::Ptr> parseReleases(const QByteArray& json, QString* error);
++
++   protected slots:
++    void updateListData(QList<BaseVersion::Ptr>) override {}
++
++   private:
++    friend class VersionListLoadTask;
++    void setVersions(QList<Version::Ptr> versions);
++
++    QList<Version::Ptr> m_versions;
++    QString m_recommendedTag;
++    bool m_loaded = false;
++    Task::Ptr m_loadTask;
++};
++
++}  // namespace Cleanroom
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 2165cd0..afa4986 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -63,3 +63,6 @@ ecm_add_test(CatPack_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR
+ 
+ ecm_add_test(XmlLogs_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
+     TEST_NAME XmlLogs)
++
++ecm_add_test(CleanroomVersionList_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
++    TEST_NAME CleanroomVersionList)
+diff --git a/tests/CleanroomVersionList_test.cpp b/tests/CleanroomVersionList_test.cpp
+new file mode 100644
+index 0000000..59a6a71
+--- /dev/null
++++ b/tests/CleanroomVersionList_test.cpp
+@@ -0,0 +1,64 @@
++// SPDX-License-Identifier: GPL-3.0-only
++
++#include <QFile>
++#include <QTest>
++#include <QTimeZone>
++
++#include "minecraft/cleanroom/CleanroomVersionList.h"
++
++class CleanroomVersionListTest : public QObject {
++    Q_OBJECT
++
++   private slots:
++    void test_parseReleases()
++    {
++        QFile file(QFINDTESTDATA("testdata/CleanroomVersionList/releases.json"));
++        QVERIFY(file.open(QIODevice::ReadOnly));
++
++        QString error;
++        const auto versions = Cleanroom::VersionList::parseReleases(file.readAll(), &error);
++        QVERIFY2(error.isEmpty(), qPrintable(error));
++
++        // the draft and the release without an instance zip are skipped
++        QCOMPARE(versions.size(), 2);
++
++        const auto& latest = versions.at(0);
++        QCOMPARE(latest->tag, QString("0.7.11-alpha"));
++        QCOMPARE(latest->descriptor(), QString("0.7.11-alpha"));
++        QCOMPARE(latest->zipName, QString("cleanroom-0.7.11-alpha.zip"));
++        QCOMPARE(latest->zipUrl,
++                 QUrl("https://github.com/CleanroomMC/Cleanroom/releases/download/0.7.11-alpha/cleanroom-0.7.11-alpha.zip"));
++        QCOMPARE(latest->zipSize, qint64(13768));
++        QCOMPARE(latest->publishedAt, QDateTime(QDate(2026, 10, 19), QTime(10, 29, 16), QTimeZone::utc()));
++        QVERIFY(!latest->prerelease);
++        QCOMPARE(latest->typeString(), QString("Alpha"));
++
++        // when several zips match, the one mentioning "mmc" wins
++        const auto& pre = versions.at(1);
++        QCOMPARE(pre->tag, QString("0.7.10-pre"));
++        QCOMPARE(pre->zipName, QString("Cleanroom-MMC-instance-0.7.10-pre.zip"));
++        QVERIFY(pre->prerelease);
++        QCOMPARE(pre->typeString(), QString("Pre-release"));
++    }
++
++    void test_parseReleases_githubError()
++    {
++        QString error;
++        const auto versions =
++            Cleanroom::VersionList::parseReleases(R"({"message": "API rate limit exceeded", "documentation_url": "x"})", &error);
++        QVERIFY(versions.isEmpty());
++        QVERIFY(error.contains("API rate limit exceeded"));
++    }
++
++    void test_parseReleases_invalidJson()
++    {
++        QString error;
++        const auto versions = Cleanroom::VersionList::parseReleases("<html>not json</html>", &error);
++        QVERIFY(versions.isEmpty());
++        QVERIFY(!error.isEmpty());
++    }
++};
++
++QTEST_GUILESS_MAIN(CleanroomVersionListTest)
++
++#include "CleanroomVersionList_test.moc"
+diff --git a/tests/testdata/CleanroomVersionList/releases.json b/tests/testdata/CleanroomVersionList/releases.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..c1294a9dd98b28aac7c7694b218bc560c75e8da3
+GIT binary patch
+literal 2125
+zcmc&#%WlFj5WMphR?c-|2bw^xoVjsoRUt#%lFB%d?UX*$f3M?YTU;n5EfP`^kZkYH
+z?9PsF2ME2{7ootghlOMt9%LvWVH#43nW)w*xN6srt>uc{8+-7c3C+9xmEwvE&U6#e
+zTd0?!&}*JASaT+bNt|FxFrCaP$>K>ylN(6NwB|<JUAGPdfOUWY(8?x}sw_8n7d9@W
+zHcSYv!bhgMc<!7oUK>dCI=)Va<D`Y_R+g&VYOWS}xs{@1`Jz^$LAW-i(peNe6lPs7
+z!&SM7rjT?t{rVqugmnZFqFqSQNk}`Q?|`dq&nb*+Sv+y2nfQruoW|)enLuRQ^b0Ze
+zk^Y%+_*ztlIy+30@x@6xa6rxd-r28f>%oZ|hXl8C)ItwH-?gk@Vvx51rp~Ck@6gFw
+zh%Qav5&Oh>rt0%&wy6XU3;D!Ek$Xep=ju^RYhMIg2Lc~~TDo!cR-lNUL+x7EZgrs#
+z-<@kbkF9f!vf=1I&gF3ZR8>Mq4@n;@D%8dkD8xSCHlJ39XR~Q*t8&F#vpohm{vYJi
+z()Q2<wF73a0$fV*@?965aigtu__8*LN#yPiOB8*XOz^8%JQeM$WrPW}&zz9VJ%3h9
+Z!^JmIXrMK9xZuvFnEh<~WgpxPJ^%n+R-XU>
+
+literal 0
+HcmV?d00001
+

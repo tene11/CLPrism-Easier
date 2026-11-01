@@ -1,0 +1,289 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tene11 <tene11@localhost>
+Date: Sun, 1 Nov 2026 12:25:27 +0900
+Subject: [PATCH 4/4] Revert or remove Cleanroom as a whole
+
+Cleanroom replaces the net.minecraftforge component with a custom
+patch, so the regular Revert would look for a Forge version that
+doesn't exist, and Remove would leave its LWJGL 3 and stub jars behind.
+
+Revert now replaces Cleanroom with the recommended regular Forge for the
+Minecraft version, and Remove takes out Cleanroom, its LWJGL 3 and its
+stub jars; Minecraft's LWJGL 2 comes back on the next resolve. Removing
+Cleanroom's LWJGL 3 on its own is refused, and automatic Java selection
+picks a matching Java again afterwards.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013JsFfD4B8pB33N2PvMGY8s
+---
+ .../cleanroom/CleanroomInstallTask.cpp        | 62 ++++++++++++
+ .../cleanroom/CleanroomInstallTask.h          | 16 +++
+ launcher/ui/dialogs/InstallLoaderDialog.cpp   |  5 +-
+ launcher/ui/pages/instance/VersionPage.cpp    | 98 +++++++++++++++++++
+ 4 files changed, 177 insertions(+), 4 deletions(-)
+
+diff --git a/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp b/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
+index f9bb054..e93a4eb 100644
+--- a/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
++++ b/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
+@@ -40,6 +40,7 @@ namespace Cleanroom {
+ 
+ namespace {
+ constexpr auto CLEANROOM_UID = "net.minecraftforge";
++constexpr auto LWJGL_UID = "org.lwjgl";
+ constexpr auto MINECRAFT_UID = "net.minecraft";
+ 
+ QString describeProblems(const VersionFilePtr& file)
+@@ -168,6 +169,67 @@ bool installPackage(PackProfile* profile, const InstancePackage& package, QStrin
+ }
+ 
+ 
++// ---------------------------------------------------------------------------
++// Removing it again
++// ---------------------------------------------------------------------------
++
++bool isCleanroom(const ComponentPtr& component)
++{
++    return component && component->getID() == CLEANROOM_UID && component->isCustom() && component->getName() == "Cleanroom";
++}
++
++void resetAutomaticJava(MinecraftInstance* instance)
++{
++    auto settings = instance->settings();
++    if (APPLICATION->settings()->get("AutomaticJavaSwitch").toBool() && settings->get("AutomaticJava").toBool() &&
++        settings->get("OverrideJavaLocation").toBool()) {
++        settings->set("OverrideJavaLocation", false);
++        settings->set("JavaPath", "");
++    }
++}
++
++bool uninstall(PackProfile* profile, const QString& forgeVersion, QString* error)
++{
++    auto fail = [error](const QString& reason) {
++        if (error)
++            *error = reason;
++        return false;
++    };
++
++    const auto cleanroom = profile->getComponent(CLEANROOM_UID);
++    if (!isCleanroom(cleanroom))
++        return fail(QObject::tr("Cleanroom isn't installed in this instance."));
++
++    // remember Cleanroom's stub jars ("MMC-hint": "local" libraries) before its patch is gone
++    QStringList stubJars;
++    if (const auto file = cleanroom->getVersionFile()) {
++        for (const auto& library : file->libraries) {
++            if (library->isLocal())
++                stubJars << library->rawName().getFileName();
++        }
++    }
++
++    if (!profile->remove(CLEANROOM_UID))
++        return fail(QObject::tr("Couldn't remove the Cleanroom component."));
++
++    // the LWJGL 3 patch that came with Cleanroom. Minecraft requires org.lwjgl, so resolving the profile adds LWJGL 2 back.
++    if (const auto lwjgl = profile->getComponent(LWJGL_UID); lwjgl && lwjgl->isCustom() && !profile->remove(LWJGL_UID))
++        return fail(QObject::tr("Couldn't remove the LWJGL 3 component."));
++
++    const QString libDir = profile->instance()->getLocalLibraryPath();
++    for (const QString& jar : stubJars) {
++        const QString path = FS::PathCombine(libDir, jar);
++        if (QFileInfo::exists(path) && !QFile::remove(path))
++            qWarning() << "Couldn't delete Cleanroom stub jar" << path;  // harmless leftover, nothing refers to it anymore
++    }
++
++    if (!forgeVersion.isEmpty())
++        profile->setComponentVersion(CLEANROOM_UID, forgeVersion);
++
++    profile->invalidateLaunchProfile();
++    return true;
++}
++
+ // ---------------------------------------------------------------------------
+ // InstallTask
+ // ---------------------------------------------------------------------------
+diff --git a/launcher/minecraft/cleanroom/CleanroomInstallTask.h b/launcher/minecraft/cleanroom/CleanroomInstallTask.h
+index 4edd7e2..fed80f7 100644
+--- a/launcher/minecraft/cleanroom/CleanroomInstallTask.h
++++ b/launcher/minecraft/cleanroom/CleanroomInstallTask.h
+@@ -23,11 +23,13 @@
+ 
+ #include <optional>
+ 
++#include "minecraft/Component.h"
+ #include "minecraft/VersionFile.h"
+ #include "minecraft/cleanroom/CleanroomVersionList.h"
+ #include "net/NetJob.h"
+ #include "tasks/Task.h"
+ 
++class MinecraftInstance;
+ class PackProfile;
+ 
+ namespace Cleanroom {
+@@ -51,6 +53,20 @@ std::optional<InstancePackage> readInstancePackage(const QString& extractedDir,
+ //! replace the components with the package's patches. On failure writes the reason to \p error.
+ bool installPackage(PackProfile* profile, const InstancePackage& package, QString* error);
+ 
++//! True if \p component is Cleanroom (it replaces the "net.minecraftforge" component with a custom patch named "Cleanroom").
++bool isCleanroom(const ComponentPtr& component);
++
++//! Forget the Java that the automatic Java mechanism chose for \p instance, so a compatible one is chosen
++//! again on the next launch. Prism does the same after the Minecraft version changes.
++void resetAutomaticJava(MinecraftInstance* instance);
++
++//! Remove Cleanroom from \p profile: the Cleanroom component, the LWJGL 3 component that came with it and
++//! its stub jars. Minecraft's own LWJGL 2 comes back when the profile is resolved.
++//! If \p forgeVersion isn't empty, regular Forge \p forgeVersion is added in Cleanroom's place.
++//! The caller should resolve the profile afterwards (and usually resetAutomaticJava(), as Forge needs an older Java).
++//! On failure writes the reason to \p error.
++bool uninstall(PackProfile* profile, const QString& forgeVersion, QString* error);
++
+ //! Downloads a Cleanroom MMC instance zip and installs its components into a PackProfile:
+ //! the bundled org.lwjgl (LWJGL 3) and net.minecraftforge (Cleanroom) patches replace the existing
+ //! components, and the empty stub jars go to the instance's local library folder.
+diff --git a/launcher/ui/dialogs/InstallLoaderDialog.cpp b/launcher/ui/dialogs/InstallLoaderDialog.cpp
+index 7a18503..48f9d98 100644
+--- a/launcher/ui/dialogs/InstallLoaderDialog.cpp
++++ b/launcher/ui/dialogs/InstallLoaderDialog.cpp
+@@ -144,10 +144,7 @@ static void checkCleanroomJava(QWidget* parent, PackProfile* profile, const QStr
+     const bool autoDownload = APPLICATION->settings()->get("AutomaticJavaDownload").toBool();
+ 
+     // forget the Java that was chosen automatically for Forge, so a compatible one is chosen on the next launch
+-    if (autoSwitch && settings->get("AutomaticJava").toBool() && settings->get("OverrideJavaLocation").toBool()) {
+-        settings->set("OverrideJavaLocation", false);
+-        settings->set("JavaPath", "");
+-    }
++    Cleanroom::resetAutomaticJava(instance);
+ 
+     bool found = false;
+     QString fixedJava;
+diff --git a/launcher/ui/pages/instance/VersionPage.cpp b/launcher/ui/pages/instance/VersionPage.cpp
+index fea759b..5eedc43 100644
+--- a/launcher/ui/pages/instance/VersionPage.cpp
++++ b/launcher/ui/pages/instance/VersionPage.cpp
+@@ -73,6 +73,7 @@
+ 
+ #include "meta/Index.h"
+ #include "meta/VersionList.h"
++#include "minecraft/cleanroom/CleanroomInstallTask.h"
+ 
+ class IconProxy : public QIdentityProxyModel {
+     Q_OBJECT
+@@ -269,6 +270,80 @@ void VersionPage::on_actionReload_triggered()
+     m_container->refreshContainer();
+ }
+ 
++//! Cleanroom can't be reverted like other components: its "base" would be a Forge version that doesn't exist.
++//! Replace it with the recommended regular Forge for this Minecraft version instead.
++static bool revertCleanroomToForge(QWidget* parent, PackProfile* profile)
++{
++    const auto cleanroom = profile->getComponent("net.minecraftforge");
++    const QString minecraftVersion = profile->getComponentVersion("net.minecraft");
++
++    const auto response = CustomMessageBox::selectable(parent, QObject::tr("Revert to Forge"),
++                                                       QObject::tr("You are about to revert Cleanroom %1 back to regular Forge.\n"
++                                                                   "The LWJGL 3 that came with Cleanroom will be removed and "
++                                                                   "Minecraft's own LWJGL 2 will be restored.\n\n"
++                                                                   "Are you sure?")
++                                                           .arg(cleanroom->getVersion()),
++                                                       QMessageBox::Warning, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
++                              ->exec();
++    if (response != QMessageBox::Yes)
++        return false;
++
++    // the recommended Forge for this Minecraft version, or the newest one
++    auto forgeVersions = APPLICATION->metadataIndex()->get("net.minecraftforge");
++    if (!forgeVersions->isLoaded()) {
++        auto task = forgeVersions->getLoadTask();
++        ProgressDialog progress(parent);
++        progress.execWithTask(task.get());
++    }
++    auto forge = forgeVersions->getRecommendedForParent("net.minecraft", minecraftVersion);
++    if (!forge)
++        forge = forgeVersions->getLatestForParent("net.minecraft", minecraftVersion);
++    if (!forge) {
++        QMessageBox::critical(parent, QObject::tr("Error"), QObject::tr("Couldn't find a Forge version for Minecraft %1.").arg(minecraftVersion));
++        return false;
++    }
++
++    QString error;
++    if (!Cleanroom::uninstall(profile, forge->descriptor(), &error)) {
++        QMessageBox::critical(parent, QObject::tr("Error"), error);
++        return false;
++    }
++    Cleanroom::resetAutomaticJava(profile->instance());  // let Prism choose a Java that Forge accepts again
++    profile->resolve(Net::Mode::Online);
++    return true;
++}
++
++//! Removing Cleanroom also removes the LWJGL 3 and stub jars it brought, which would break plain Minecraft.
++static bool removeCleanroom(QWidget* parent, PackProfile* profile)
++{
++    const auto cleanroom = profile->getComponent("net.minecraftforge");
++    const auto response = CustomMessageBox::selectable(parent, QObject::tr("Confirm Removal"),
++                                                       QObject::tr("You are about to remove Cleanroom %1.\n"
++                                                                   "The LWJGL 3 that came with it will be removed too and "
++                                                                   "Minecraft's own LWJGL 2 will be restored.\n\n"
++                                                                   "Are you sure?")
++                                                           .arg(cleanroom->getVersion()),
++                                                       QMessageBox::Warning, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
++                              ->exec();
++    if (response != QMessageBox::Yes)
++        return false;
++
++    QString error;
++    if (!Cleanroom::uninstall(profile, QString(), &error)) {
++        QMessageBox::critical(parent, QObject::tr("Error"), error);
++        return false;
++    }
++    Cleanroom::resetAutomaticJava(profile->instance());  // let Prism choose a Java that Minecraft accepts again
++    return true;
++}
++
++//! True if \p component is the LWJGL 3 that Cleanroom needs.
++static bool isCleanroomLwjgl(PackProfile* profile, const ComponentPtr& component)
++{
++    return component && component->getID() == "org.lwjgl" && component->isCustom() &&
++           Cleanroom::isCleanroom(profile->getComponent("net.minecraftforge"));
++}
++
+ void VersionPage::on_actionRemove_triggered()
+ {
+     if (!ui->packageView->currentIndex().isValid()) {
+@@ -276,6 +351,20 @@ void VersionPage::on_actionRemove_triggered()
+     }
+     int index = ui->packageView->currentIndex().row();
+     auto component = m_profile->getComponent(index);
++    if (Cleanroom::isCleanroom(component)) {
++        if (removeCleanroom(this, m_profile)) {
++            updateButtons();
++            reloadPackProfile();
++            m_container->refreshContainer();
++        }
++        return;
++    }
++    if (isCleanroomLwjgl(m_profile, component)) {
++        QMessageBox::information(this, tr("LWJGL 3 is needed"),
++                                 tr("Cleanroom needs this LWJGL 3. Remove or revert Cleanroom instead, "
++                                    "and LWJGL 3 will be removed along with it."));
++        return;
++    }
+     if (component->isCustom()) {
+         auto response = CustomMessageBox::selectable(this, tr("Confirm Removal"),
+                                                      tr("You are about to remove \"%1\".\n"
+@@ -564,6 +653,15 @@ void VersionPage::on_actionRevert_triggered()
+     }
+     auto component = m_profile->getComponent(version);
+ 
++    // Cleanroom and its LWJGL 3 go back to regular Forge together
++    if (Cleanroom::isCleanroom(component) || isCleanroomLwjgl(m_profile, component)) {
++        if (revertCleanroomToForge(this, m_profile)) {
++            updateButtons();
++            m_container->refreshContainer();
++        }
++        return;
++    }
++
+     auto response = CustomMessageBox::selectable(this, tr("Confirm Reversion"),
+                                                  tr("You are about to revert \"%1\".\n"
+                                                     "This is permanent and will completely revert your customizations.\n\n"
