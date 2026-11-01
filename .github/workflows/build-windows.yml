@@ -28,13 +28,22 @@ on:
         type: boolean
         default: false
 
+# Building runs Prism Launcher's own CI actions and build scripts, so that job can only read this repository.
+# Only the small release job, which runs nothing but "gh release", may write to it.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: windows-2022
     timeout-minutes: 180
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      commit: ${{ steps.source.outputs.commit }}
+      short: ${{ steps.source.outputs.short }}
+      zip: ${{ steps.package.outputs.zip }}
     concurrency:
       group: build-windows-${{ inputs.ref || github.ref }}
       cancel-in-progress: true
@@ -107,13 +116,18 @@ jobs:
         run: ctest --preset "$CMAKE_PRESET" --build-config "$BUILD_TYPE"
 
       - name: Package as a portable zip
+        id: package
         shell: pwsh
+        env:
+          TAG: ${{ steps.source.outputs.tag }}
+          SHORT: ${{ steps.source.outputs.short }}
         run: |
           cmake --install build --config $env:BUILD_TYPE
           cmake --install build --config $env:BUILD_TYPE --component portable
-          $name = "PrismLauncher-${{ steps.source.outputs.tag }}-Cleanroom-Windows-x64-${{ steps.source.outputs.short }}.zip"
+          $name = "PrismLauncher-$env:TAG-Cleanroom-Windows-x64-$env:SHORT.zip"
           Compress-Archive -Path install\* -DestinationPath $name
           "ZIP_NAME=$name" | Out-File -Append $env:GITHUB_ENV
+          "zip=$name" | Out-File -Append $env:GITHUB_OUTPUT
 
       - name: Upload the zip
         uses: actions/upload-artifact@v4
@@ -122,13 +136,25 @@ jobs:
           path: ${{ env.ZIP_NAME }}
           retention-days: 30
 
+  release:
+    needs: build
+    if: github.event_name == 'push' || inputs.release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download the zip
+        uses: actions/download-artifact@v4
+        with:
+          name: PrismLauncher-Cleanroom-Windows-x64
+
       - name: Publish a GitHub Release
-        if: github.event_name == 'push' || inputs.release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.source.outputs.tag }}
-          COMMIT: ${{ steps.source.outputs.commit }}
-          SHORT: ${{ steps.source.outputs.short }}
+          TAG: ${{ needs.build.outputs.tag }}
+          COMMIT: ${{ needs.build.outputs.commit }}
+          SHORT: ${{ needs.build.outputs.short }}
+          ZIP_NAME: ${{ needs.build.outputs.zip }}
         run: |
           release="build-$TAG-$SHORT"
           notes="Prism Launcher $TAG に Cleanroom のパッチを当てた Windows 版（ポータブル）です。

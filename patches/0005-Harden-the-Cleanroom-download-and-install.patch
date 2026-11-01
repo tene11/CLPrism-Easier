@@ -1,0 +1,196 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tene11 <tene11@localhost>
+Date: Sun, 1 Nov 2026 16:34:16 +0900
+Subject: [PATCH 5/5] Harden the Cleanroom download and install
+
+- Only accept download URLs of the CleanroomMC/Cleanroom GitHub releases
+  over HTTPS.
+- Reject component uids from the downloaded zip that could be used as a
+  path (they become patches/<uid>.json).
+- When removing Cleanroom, only delete plain "<name>.jar" stub files
+  from the instance's library folder.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013JsFfD4B8pB33N2PvMGY8s
+---
+ .../cleanroom/CleanroomInstallTask.cpp        |  16 ++++-
+ .../cleanroom/CleanroomVersionList.cpp        |   9 ++-
+ tests/CMakeLists.txt                          |   3 +
+ tests/CleanroomInstall_test.cpp               |  57 ++++++++++++++++++
+ tests/CleanroomVersionList_test.cpp           |   2 +-
+ .../CleanroomVersionList/releases.json        | Bin 2125 -> 2615 bytes
+ 6 files changed, 83 insertions(+), 4 deletions(-)
+ create mode 100644 tests/CleanroomInstall_test.cpp
+
+diff --git a/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp b/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
+index e93a4eb..abff474 100644
+--- a/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
++++ b/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
+@@ -24,6 +24,7 @@
+ #include <QJsonArray>
+ #include <QJsonDocument>
+ #include <QJsonObject>
++#include <QRegularExpression>
+ 
+ #include <algorithm>
+ 
+@@ -43,6 +44,13 @@ constexpr auto CLEANROOM_UID = "net.minecraftforge";
+ constexpr auto LWJGL_UID = "org.lwjgl";
+ constexpr auto MINECRAFT_UID = "net.minecraft";
+ 
++//! A component uid becomes a file name (patches/<uid>.json), so it must not be able to point anywhere else.
++bool isSafeUid(const QString& uid)
++{
++    static const QRegularExpression pattern("^[A-Za-z0-9][A-Za-z0-9._-]*$");
++    return pattern.match(uid).hasMatch() && !uid.contains("..");
++}
++
+ QString describeProblems(const VersionFilePtr& file)
+ {
+     QStringList lines;
+@@ -90,6 +98,8 @@ std::optional<InstancePackage> readInstancePackage(const QString& extractedDir,
+ 
+     InstancePackage package;
+     for (const QString& uid : order) {
++        if (!isSafeUid(uid))
++            return fail(QObject::tr("The downloaded file contains an invalid component name: \"%1\".").arg(uid));
+         if (uid == MINECRAFT_UID)
+             continue;  // never replace Minecraft itself
+ 
+@@ -204,8 +214,10 @@ bool uninstall(PackProfile* profile, const QString& forgeVersion, QString* error
+     QStringList stubJars;
+     if (const auto file = cleanroom->getVersionFile()) {
+         for (const auto& library : file->libraries) {
+-            if (library->isLocal())
+-                stubJars << library->rawName().getFileName();
++            // only plain "<name>.jar" file names: never delete anything outside the library folder
++            const QString jar = library->rawName().getFileName();
++            if (library->isLocal() && jar.endsWith(".jar") && QFileInfo(jar).fileName() == jar && !jar.contains(".."))
++                stubJars << jar;
+         }
+     }
+ 
+diff --git a/launcher/minecraft/cleanroom/CleanroomVersionList.cpp b/launcher/minecraft/cleanroom/CleanroomVersionList.cpp
+index 5ac8802..f8ac669 100644
+--- a/launcher/minecraft/cleanroom/CleanroomVersionList.cpp
++++ b/launcher/minecraft/cleanroom/CleanroomVersionList.cpp
+@@ -224,12 +224,19 @@ QList<Version::Ptr> VersionList::parseReleases(const QByteArray& json, QString*
+             qDebug() << "Cleanroom release" << tag << "has no MMC instance zip, skipping";
+             continue;
+         }
++        // only download release files of the Cleanroom repository itself, over HTTPS
++        const QUrl zipUrl(zipAsset.value("browser_download_url").toString());
++        if (zipUrl.scheme() != "https" || zipUrl.host() != "github.com" ||
++            !zipUrl.path().startsWith("/CleanroomMC/Cleanroom/releases/download/") || zipUrl.path().contains("..")) {
++            qWarning() << "Cleanroom release" << tag << "has an unexpected download URL" << zipUrl << ", skipping";
++            continue;
++        }
+ 
+         auto version = std::make_shared<Version>();
+         version->tag = tag;
+         version->publishedAt = QDateTime::fromString(release.value("published_at").toString(), Qt::ISODate);
+         version->prerelease = release.value("prerelease").toBool();
+-        version->zipUrl = QUrl(zipAsset.value("browser_download_url").toString());
++        version->zipUrl = zipUrl;
+         version->zipName = zipAsset.value("name").toString();
+         version->zipSize = zipAsset.value("size").toVariant().toLongLong();
+         result.append(version);
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index afa4986..b9a48fd 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -66,3 +66,6 @@ ecm_add_test(XmlLogs_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR
+ 
+ ecm_add_test(CleanroomVersionList_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
+     TEST_NAME CleanroomVersionList)
++
++ecm_add_test(CleanroomInstall_test.cpp LINK_LIBRARIES Launcher_logic Qt${QT_VERSION_MAJOR}::Test
++    TEST_NAME CleanroomInstall)
+diff --git a/tests/CleanroomInstall_test.cpp b/tests/CleanroomInstall_test.cpp
+new file mode 100644
+index 0000000..db97970
+--- /dev/null
++++ b/tests/CleanroomInstall_test.cpp
+@@ -0,0 +1,57 @@
++// SPDX-License-Identifier: GPL-3.0-only
++
++#include <QDir>
++#include <QFile>
++#include <QTemporaryDir>
++#include <QTest>
++
++#include "minecraft/cleanroom/CleanroomInstallTask.h"
++
++class CleanroomInstallTest : public QObject {
++    Q_OBJECT
++
++    static void write(const QString& path, const QByteArray& data)
++    {
++        QDir().mkpath(QFileInfo(path).absolutePath());
++        QFile file(path);
++        QVERIFY(file.open(QIODevice::WriteOnly));
++        file.write(data);
++    }
++
++   private slots:
++    void test_rejectsPathLikeUids_data()
++    {
++        QTest::addColumn<QString>("uid");
++        QTest::newRow("parent folder") << "../../evil";
++        QTest::newRow("absolute path") << "/tmp/evil";
++        QTest::newRow("backslash") << "..\\\\evil";
++        QTest::newRow("dot dot") << "net..evil";
++    }
++
++    void test_rejectsPathLikeUids()
++    {
++        QFETCH(QString, uid);
++        QTemporaryDir dir;
++        write(dir.filePath("mmc-pack.json"), QString(R"({"formatVersion": 1, "components": [{"uid": "%1"}]})").arg(uid).toUtf8());
++        write(dir.filePath("patches/net.minecraftforge.json"), "{}");
++
++        QString error;
++        QVERIFY(!Cleanroom::readInstancePackage(dir.path(), &error));
++        QVERIFY2(error.contains("invalid component name"), qPrintable(error));
++    }
++
++    void test_requiresCleanroomPatch()
++    {
++        QTemporaryDir dir;
++        write(dir.filePath("mmc-pack.json"), R"({"formatVersion": 1, "components": [{"uid": "net.minecraft"}]})");
++        QDir().mkpath(dir.filePath("patches"));
++
++        QString error;
++        QVERIFY(!Cleanroom::readInstancePackage(dir.path(), &error));
++        QVERIFY2(error.contains("net.minecraftforge"), qPrintable(error));
++    }
++};
++
++QTEST_GUILESS_MAIN(CleanroomInstallTest)
++
++#include "CleanroomInstall_test.moc"
+diff --git a/tests/CleanroomVersionList_test.cpp b/tests/CleanroomVersionList_test.cpp
+index 59a6a71..acb2168 100644
+--- a/tests/CleanroomVersionList_test.cpp
++++ b/tests/CleanroomVersionList_test.cpp
+@@ -19,7 +19,7 @@ class CleanroomVersionListTest : public QObject {
+         const auto versions = Cleanroom::VersionList::parseReleases(file.readAll(), &error);
+         QVERIFY2(error.isEmpty(), qPrintable(error));
+ 
+-        // the draft and the release without an instance zip are skipped
++        // the draft, the release without an instance zip and the zip hosted elsewhere are skipped
+         QCOMPARE(versions.size(), 2);
+ 
+         const auto& latest = versions.at(0);
+diff --git a/tests/testdata/CleanroomVersionList/releases.json b/tests/testdata/CleanroomVersionList/releases.json
+index c1294a9dd98b28aac7c7694b218bc560c75e8da3..458360cc51289028292d542a92d5a7ebb543be6d 100644
+GIT binary patch
+delta 190
+zcmX>ruw7)s4c5sDOcrbgx&=k4`jhKeB_}hob%BIf!9ts7v29?Syq`tV&{EG*H?=G?
+zM@ffE0SJ`x5_40PtQ3^0G7A(k@{3DSQxuBxb5qMRQj1a*Qgez^C))dR8ySQc7+8VP
+z<Um$S4wxa6_c2LKPGD1?+`%R@S&~`N2q>YSoRgZESCpTht81VKQ>X_tUI}cWf<i5r
+Ljs=pnT(MjLX*o7@
+
+delta 35
+qcmdlka#mo&4c5tN95R!;Sa~PwvvmR40+VlZa&BT@#>mVS%LM@D1`9a=
+

@@ -81,6 +81,10 @@ try {
         Run git config --local user.email "$userId+$login@users.noreply.github.com"
         Run git config --local core.autocrlf false
 
+        # .gitignore に載っているのに、以前のコミットに入ってしまったファイル (ログなど) を外す
+        foreach ($ignored in @(& git ls-files --cached --ignored --exclude-standard)) {
+            if ($ignored) { Run git rm --cached --quiet -- $ignored }
+        }
         Run git add --all
         if ((ExitCodeOf git diff --cached --quiet) -ne 0) {
             $message = if ((ExitCodeOf git rev-parse --verify --quiet HEAD) -eq 0) { "Update patches and scripts" } else { "Add Cleanroom support patches for Prism Launcher" }
