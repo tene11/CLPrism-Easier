@@ -1,0 +1,143 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tene11 <tene11@localhost>
+Date: Wed, 4 Nov 2026 01:37:27 +0900
+Subject: [PATCH 8/8] Change the Cleanroom version from the Version page
+
+Cleanroom installs as the net.minecraftforge component, so "Change
+version" listed Forge versions and picking one replaced Cleanroom with
+Forge.
+
+On Cleanroom, "Change version" now lists the Cleanroom releases from
+GitHub and installs the selected one the same way the Install Loader
+dialog does (the same version can be installed again to repair an
+instance). The button stays enabled even before the Forge list is
+loaded. On Cleanroom's LWJGL 3 it explains that the LWJGL comes with
+the Cleanroom version instead of offering LWJGL 2 versions.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019uQWuLEagQcA1VAuw2GCJd
+---
+ launcher/ui/dialogs/InstallLoaderDialog.cpp |  5 +--
+ launcher/ui/dialogs/InstallLoaderDialog.h   |  9 +++++
+ launcher/ui/pages/instance/VersionPage.cpp  | 44 ++++++++++++++++++++-
+ 3 files changed, 54 insertions(+), 4 deletions(-)
+
+diff --git a/launcher/ui/dialogs/InstallLoaderDialog.cpp b/launcher/ui/dialogs/InstallLoaderDialog.cpp
+index aabc769..1951a96 100644
+--- a/launcher/ui/dialogs/InstallLoaderDialog.cpp
++++ b/launcher/ui/dialogs/InstallLoaderDialog.cpp
+@@ -219,8 +219,7 @@ static void checkCleanroomJava(QWidget* parent, PackProfile* profile, const QStr
+     CustomMessageBox::selectable(parent, QObject::tr("Java %1 is needed").arg(needed), text, QMessageBox::Warning)->exec();
+ }
+ 
+-//! Download the selected Cleanroom version and install it. Returns false if it was cancelled or failed.
+-static bool installCleanroom(QWidget* parent, PackProfile* profile, const BaseVersion::Ptr& selected)
++bool Cleanroom::installWithDialogs(QWidget* parent, PackProfile* profile, const BaseVersion::Ptr& selected)
+ {
+     const auto version = std::dynamic_pointer_cast<Cleanroom::Version>(selected);
+     if (!version)
+@@ -337,7 +336,7 @@ void InstallLoaderDialog::done(int result)
+         if (page->selectedVersion() && page->id() == Cleanroom::PAGE_ID) {
+             // Cleanroom isn't on the meta server: download its MMC instance zip and install the components from it.
+             // Keep the dialog open if that was cancelled or failed.
+-            if (!installCleanroom(this, profile, page->selectedVersion()))
++            if (!Cleanroom::installWithDialogs(this, profile, page->selectedVersion()))
+                 return;
+             QDialog::done(result);
+             return;
+diff --git a/launcher/ui/dialogs/InstallLoaderDialog.h b/launcher/ui/dialogs/InstallLoaderDialog.h
+index 501f136..59368ab 100644
+--- a/launcher/ui/dialogs/InstallLoaderDialog.h
++++ b/launcher/ui/dialogs/InstallLoaderDialog.h
+@@ -19,6 +19,7 @@
+ #pragma once
+ 
+ #include <QDialog>
++#include "BaseVersion.h"
+ #include "ui/pages/BasePageProvider.h"
+ 
+ class MinecraftInstance;
+@@ -26,6 +27,14 @@ class PageContainer;
+ class PackProfile;
+ class QDialogButtonBox;
+ 
++namespace Cleanroom {
++//! Download Cleanroom \p version (a Cleanroom::Version) and install it into \p profile, asking the user first where needed
++//! and warning afterwards if no Java that Cleanroom accepts is going to be used. Resolves the profile when done.
++//! Used by the Install Loader dialog and by "Change version" on the Version page.
++//! Returns false if it was cancelled or failed (the user has been told why).
++bool installWithDialogs(QWidget* parent, PackProfile* profile, const BaseVersion::Ptr& version);
++}  // namespace Cleanroom
++
+ class InstallLoaderDialog final : public QDialog, protected BasePageProvider {
+     Q_OBJECT
+ 
+diff --git a/launcher/ui/pages/instance/VersionPage.cpp b/launcher/ui/pages/instance/VersionPage.cpp
+index 5eedc43..06f0b1b 100644
+--- a/launcher/ui/pages/instance/VersionPage.cpp
++++ b/launcher/ui/pages/instance/VersionPage.cpp
+@@ -241,7 +241,8 @@ void VersionPage::updateButtons(int row)
+     ui->actionRemove->setEnabled(patch && patch->isRemovable());
+     ui->actionMove_down->setEnabled(patch && patch->isMoveable());
+     ui->actionMove_up->setEnabled(patch && patch->isMoveable());
+-    ui->actionChange_version->setEnabled(patch && patch->isVersionChangeable(false));
++    // Cleanroom's versions come from GitHub Releases, not from the Forge list its component uid points to
++    ui->actionChange_version->setEnabled(patch && (Cleanroom::isCleanroom(patch) || patch->isVersionChangeable(false)));
+     ui->actionEdit->setEnabled(patch && patch->isCustom());
+     ui->actionCustomize->setEnabled(patch && patch->isCustomizable());
+     ui->actionRevert->setEnabled(patch && patch->isRevertible());
+@@ -344,6 +345,35 @@ static bool isCleanroomLwjgl(PackProfile* profile, const ComponentPtr& component
+            Cleanroom::isCleanroom(profile->getComponent("net.minecraftforge"));
+ }
+ 
++//! "Change version" on Cleanroom: pick another Cleanroom release (not a Forge version, which its uid would offer)
++//! and install it like the Install Loader dialog does.
++static void changeCleanroomVersion(QWidget* parent, PackProfile* profile, const ComponentPtr& cleanroom)
++{
++    Cleanroom::VersionList versions;
++    VersionSelectDialog select(&versions, QObject::tr("Change %1 version").arg(cleanroom->getName()), parent);
++    select.setEmptyString(QObject::tr("No Cleanroom versions are currently available."));
++    select.setEmptyErrorString(QObject::tr("Couldn't load the Cleanroom versions from GitHub!"));
++    select.setCurrentVersion(cleanroom->getVersion());
++    if (!select.exec() || !select.selectedVersion())
++        return;
++
++    const QString selected = select.selectedVersion()->descriptor();
++    if (selected == cleanroom->getVersion()) {
++        // installing the same version again is how a broken install is repaired, so allow it, but ask
++        const auto answer = CustomMessageBox::selectable(parent, QObject::tr("Reinstall Cleanroom?"),
++                                                         QObject::tr("Cleanroom %1 is already installed.\n"
++                                                                     "Do you want to download and install it again?")
++                                                             .arg(selected),
++                                                         QMessageBox::Question, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
++                                ->exec();
++        if (answer != QMessageBox::Yes)
++            return;
++    }
++
++    qDebug() << "Change Cleanroom" << cleanroom->getVersion() << "to" << selected;
++    Cleanroom::installWithDialogs(parent, profile, select.selectedVersion());
++}
++
+ void VersionPage::on_actionRemove_triggered()
+ {
+     if (!ui->packageView->currentIndex().isValid()) {
+@@ -459,6 +489,18 @@ void VersionPage::on_actionChange_version_triggered()
+         return;
+     }
+     auto patch = m_profile->getComponent(versionRow);
++    if (Cleanroom::isCleanroom(patch)) {
++        changeCleanroomVersion(this, m_profile, patch);
++        updateButtons();
++        m_container->refreshContainer();
++        return;
++    }
++    if (isCleanroomLwjgl(m_profile, patch)) {
++        QMessageBox::information(this, tr("LWJGL 3 comes with Cleanroom"),
++                                 tr("Each Cleanroom version brings the LWJGL 3 it needs. "
++                                    "Change the version of Cleanroom instead, and its LWJGL 3 will change along with it."));
++        return;
++    }
+     auto name = patch->getName();
+     auto list = patch->getVersionList();
+     list->clearExternalRecommends();
