@@ -1,0 +1,251 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tene11 <tene11@localhost>
+Date: Wed, 4 Nov 2026 01:31:47 +0900
+Subject: [PATCH 7/7] Keep Cleanroom's LWJGL 3 the only LWJGL in the instance
+
+Cleanroom brings LWJGL 3 as org.lwjgl. If the instance also has the
+org.lwjgl3 component, both end up on the classpath and the game crashes
+on start with "Incompatible Java and native library versions detected"
+(UnsatisfiedLinkError in MemoryUtil.ngetPageSize).
+
+This happens with a Minecraft that was customized by hand to require
+org.lwjgl3: resolving the profile keeps adding LWJGL 3 3.3.1 next to
+Cleanroom's 3.4.3. Installing Cleanroom now reverts such a Minecraft to
+its original version (after asking, as the changes to it are lost) and
+removes the org.lwjgl3 component. Other components that require
+org.lwjgl3 stop the installation before anything is changed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019uQWuLEagQcA1VAuw2GCJd
+---
+ .../cleanroom/CleanroomInstallTask.cpp        | 61 +++++++++++++++++++
+ .../cleanroom/CleanroomInstallTask.h          | 25 +++++++-
+ launcher/ui/dialogs/InstallLoaderDialog.cpp   | 33 ++++++++++
+ tests/CleanroomInstall_test.cpp               | 29 +++++++++
+ 4 files changed, 147 insertions(+), 1 deletion(-)
+
+diff --git a/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp b/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
+index abff474..cabea49 100644
+--- a/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
++++ b/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
+@@ -60,6 +60,48 @@ QString describeProblems(const VersionFilePtr& file)
+ }
+ }  // namespace
+ 
++// ---------------------------------------------------------------------------
++// Keeping a single LWJGL
++// ---------------------------------------------------------------------------
++
++bool requiresOtherLwjgl(const Meta::RequireSet& reqs)
++{
++    return std::any_of(reqs.cbegin(), reqs.cend(), [](const Meta::Require& req) { return req.uid == OTHER_LWJGL_UID; });
++}
++
++LwjglConflict findLwjglConflict(PackProfile* profile)
++{
++    LwjglConflict conflict;
++    for (int i = 0; i < profile->rowCount(); i++) {
++        const auto component = profile->getComponent(static_cast<size_t>(i));
++        if (!component)
++            continue;
++        const QString uid = component->getID();
++
++        if (uid == OTHER_LWJGL_UID) {
++            if (component->isRemovable())
++                conflict.removeOtherLwjgl = true;
++            else
++                conflict.blockers << component->getName();
++            continue;
++        }
++        if (uid == LWJGL_UID || uid == CLEANROOM_UID)
++            continue;  // replaced by the Cleanroom zip
++
++        // a custom patch is read from its file; a component from the meta server may not be loaded yet,
++        // but its requirements are cached in mmc-pack.json
++        const auto file = component->isCustom() ? component->getVersionFile() : nullptr;
++        if (!requiresOtherLwjgl(file ? file->m_requires : component->m_cachedRequires))
++            continue;
++
++        if (uid == MINECRAFT_UID && component->isCustom() && component->isRevertible())
++            conflict.revertMinecraft = true;  // e.g. an older attempt to run Cleanroom that edited Minecraft by hand
++        else
++            conflict.blockers << component->getName();
++    }
++    return conflict;
++}
++
+ // ---------------------------------------------------------------------------
+ // Reading the extracted zip
+ // ---------------------------------------------------------------------------
+@@ -143,6 +185,14 @@ bool installPackage(PackProfile* profile, const InstancePackage& package, QStrin
+         return false;
+     };
+ 
++    // check before anything is changed
++    const auto lwjglConflict = findLwjglConflict(profile);
++    if (!lwjglConflict.isFixable()) {
++        return fail(QObject::tr("%1 needs another LWJGL 3 (%2), which can't be used together with the LWJGL 3 that Cleanroom brings.\n"
++                                "Remove or revert it in the instance first.")
++                        .arg(lwjglConflict.blockers.join(", "), OTHER_LWJGL_UID));
++    }
++
+     // 1. the empty stub jars that hide vanilla's LWJGL 2 & co. ("MMC-hint": "local" libraries)
+     const QString libDir = profile->instance()->getLocalLibraryPath();
+     if (!package.libraryJars.isEmpty() && !FS::ensureFolderPathExists(libDir)) {
+@@ -173,6 +223,17 @@ bool installPackage(PackProfile* profile, const InstancePackage& package, QStrin
+         profile->appendComponent(makeShared<Component>(profile, patch.uid, patch.file));
+     }
+ 
++    // 3. make Cleanroom's LWJGL 3 the only one. Minecraft goes first: as long as it asks for org.lwjgl3,
++    //    resolving the profile would add that LWJGL 3 right back.
++    if (lwjglConflict.revertMinecraft) {
++        const auto minecraft = profile->getComponent(MINECRAFT_UID);
++        if (!minecraft || !minecraft->revert())
++            return fail(QObject::tr("Couldn't revert Minecraft to its original version."));
++    }
++    if (lwjglConflict.removeOtherLwjgl && profile->getComponent(OTHER_LWJGL_UID) && !profile->remove(OTHER_LWJGL_UID)) {
++        return fail(QObject::tr("Couldn't remove the %1 component.").arg(OTHER_LWJGL_UID));
++    }
++
+     profile->invalidateLaunchProfile();
+     profile->saveNow();
+     return true;
+diff --git a/launcher/minecraft/cleanroom/CleanroomInstallTask.h b/launcher/minecraft/cleanroom/CleanroomInstallTask.h
+index fed80f7..4e343f8 100644
+--- a/launcher/minecraft/cleanroom/CleanroomInstallTask.h
++++ b/launcher/minecraft/cleanroom/CleanroomInstallTask.h
+@@ -45,12 +45,35 @@ struct InstancePackage {
+     QStringList libraryJars;  //!< libraries/*.jar inside the extracted zip (the "999999.0-empty" stubs)
+ };
+ 
++//! The LWJGL 3 component that Minecraft 1.13 and later use. Cleanroom brings its own LWJGL 3 as "org.lwjgl",
++//! so if this one is in the instance too, two LWJGL versions end up on the classpath and the game crashes on start
++//! ("Incompatible Java and native library versions detected").
++inline constexpr auto OTHER_LWJGL_UID = "org.lwjgl3";
++
++//! True if \p reqs asks for the other LWJGL 3 (org.lwjgl3) besides the one Cleanroom brings.
++bool requiresOtherLwjgl(const Meta::RequireSet& reqs);
++
++//! What has to change in an instance so that Cleanroom's LWJGL 3 is the only LWJGL in it.
++struct LwjglConflict {
++    bool revertMinecraft = false;   //!< Minecraft is customized and asks for org.lwjgl3: revert it to its original version
++    bool removeOtherLwjgl = false;  //!< the instance has an org.lwjgl3 component that has to go
++    QStringList blockers;           //!< names of other components that ask for org.lwjgl3, which can't be fixed automatically
++
++    bool isFixable() const { return blockers.isEmpty(); }
++};
++
++//! Look for anything in \p profile that would add a second LWJGL 3 next to Cleanroom's.
++//! The components Cleanroom replaces (org.lwjgl and net.minecraftforge) are not looked at.
++LwjglConflict findLwjglConflict(PackProfile* profile);
++
+ //! Read and validate an extracted Cleanroom MMC instance zip.
+ //! On failure returns std::nullopt and writes the reason to \p error.
+ std::optional<InstancePackage> readInstancePackage(const QString& extractedDir, QString* error);
+ 
+ //! Install a package into \p profile: copy the stub jars to the instance's local library folder and
+-//! replace the components with the package's patches. On failure writes the reason to \p error.
++//! replace the components with the package's patches. Anything that would add a second LWJGL 3 is fixed
++//! as findLwjglConflict() describes: a customized Minecraft asking for org.lwjgl3 is reverted (ask the user first),
++//! and an org.lwjgl3 component is removed. On failure writes the reason to \p error.
+ bool installPackage(PackProfile* profile, const InstancePackage& package, QString* error);
+ 
+ //! True if \p component is Cleanroom (it replaces the "net.minecraftforge" component with a custom patch named "Cleanroom").
+diff --git a/launcher/ui/dialogs/InstallLoaderDialog.cpp b/launcher/ui/dialogs/InstallLoaderDialog.cpp
+index 972f2eb..aabc769 100644
+--- a/launcher/ui/dialogs/InstallLoaderDialog.cpp
++++ b/launcher/ui/dialogs/InstallLoaderDialog.cpp
+@@ -129,6 +129,37 @@ static bool confirmForgeReplacement(QWidget* parent, PackProfile* profile, const
+     return answer == QMessageBox::Yes;
+ }
+ 
++//! A second LWJGL 3 next to Cleanroom's makes the game crash on start. Stop if it can't be fixed, and ask before
++//! a customized Minecraft is reverted for it (the changes made to Minecraft are lost).
++static bool confirmLwjglFix(QWidget* parent, PackProfile* profile, const QString& cleanroomVersion)
++{
++    const auto conflict = Cleanroom::findLwjglConflict(profile);
++    if (!conflict.isFixable()) {
++        CustomMessageBox::selectable(parent, QObject::tr("Another LWJGL is installed"),
++                                     QObject::tr("%1 needs another LWJGL 3 (%2), which can't be used together with the LWJGL 3 "
++                                                 "that Cleanroom %3 brings.\n\n"
++                                                 "Remove or revert it in the instance first.")
++                                         .arg(conflict.blockers.join(", "), Cleanroom::OTHER_LWJGL_UID, cleanroomVersion),
++                                     QMessageBox::Critical)
++            ->exec();
++        return false;
++    }
++    if (!conflict.revertMinecraft)
++        return true;  // only an org.lwjgl3 that was added automatically: removing it needs no question
++
++    const auto answer =
++        CustomMessageBox::selectable(parent, QObject::tr("Revert Minecraft?"),
++                                     QObject::tr("Minecraft in this instance has been customized and needs another LWJGL 3 (%1).\n"
++                                                 "Together with the LWJGL 3 that Cleanroom %2 brings, the game would crash on start.\n\n"
++                                                 "Installing Cleanroom will revert Minecraft to its original version, "
++                                                 "and the changes made to it will be lost.\n\n"
++                                                 "Do you want to continue?")
++                                         .arg(Cleanroom::OTHER_LWJGL_UID, cleanroomVersion),
++                                     QMessageBox::Question, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
++            ->exec();
++    return answer == QMessageBox::Yes;
++}
++
+ //! Cleanroom needs a much newer Java than Forge 1.12.2.
+ //! Let the automatic Java mechanism pick again (like Prism does after a Minecraft version change),
+ //! then warn if no compatible Java is going to be used.
+@@ -197,6 +228,8 @@ static bool installCleanroom(QWidget* parent, PackProfile* profile, const BaseVe
+ 
+     if (!confirmForgeReplacement(parent, profile, version->tag))
+         return false;
++    if (!confirmLwjglFix(parent, profile, version->tag))
++        return false;
+ 
+     auto task = makeShared<Cleanroom::InstallTask>(profile, version);
+     ProgressDialog progress(parent);
+diff --git a/tests/CleanroomInstall_test.cpp b/tests/CleanroomInstall_test.cpp
+index db97970..e990e0d 100644
+--- a/tests/CleanroomInstall_test.cpp
++++ b/tests/CleanroomInstall_test.cpp
+@@ -5,6 +5,7 @@
+ #include <QTemporaryDir>
+ #include <QTest>
+ 
++#include "minecraft/ProfileUtils.h"
+ #include "minecraft/cleanroom/CleanroomInstallTask.h"
+ 
+ class CleanroomInstallTest : public QObject {
+@@ -50,6 +51,34 @@ class CleanroomInstallTest : public QObject {
+         QVERIFY(!Cleanroom::readInstancePackage(dir.path(), &error));
+         QVERIFY2(error.contains("net.minecraftforge"), qPrintable(error));
+     }
++
++    void test_requiresOtherLwjgl_data()
++    {
++        QTest::addColumn<QByteArray>("reqs");
++        QTest::addColumn<bool>("other");
++        // Minecraft 1.12.2 from the meta server: LWJGL 2 as org.lwjgl, which Cleanroom replaces
++        QTest::newRow("meta Minecraft") << QByteArray(R"([{"uid": "org.lwjgl", "suggests": "2.9.4-nightly-20150209"}])") << false;
++        // Minecraft customized to require LWJGL 3.3.1: it adds a second LWJGL 3 next to Cleanroom's 3.4.3
++        QTest::newRow("customized Minecraft") << QByteArray(R"([{"uid": "org.lwjgl3", "suggests": "3.3.1"}])") << true;
++        QTest::newRow("among others") << QByteArray(R"([{"uid": "net.minecraft"}, {"uid": "org.lwjgl3", "equals": "3.3.3"}])") << true;
++        QTest::newRow("Cleanroom itself")
++            << QByteArray(R"([{"uid": "net.minecraft", "equals": "1.12.2"}, {"uid": "org.lwjgl", "equals": "3.4.3"}])") << false;
++        QTest::newRow("nothing") << QByteArray("[]") << false;
++    }
++
++    void test_requiresOtherLwjgl()
++    {
++        QFETCH(QByteArray, reqs);
++        QFETCH(bool, other);
++
++        QTemporaryDir dir;
++        const QString path = dir.filePath("net.minecraft.json");
++        write(path, R"({"formatVersion": 1, "uid": "net.minecraft", "name": "Minecraft", "version": "1.12.2", "requires": )" + reqs + "}");
++
++        const auto file = ProfileUtils::parseJsonFile(QFileInfo(path), false);
++        QVERIFY(file);
++        QCOMPARE(Cleanroom::requiresOtherLwjgl(file->m_requires), other);
++    }
+ };
+ 
+ QTEST_GUILESS_MAIN(CleanroomInstallTest)
