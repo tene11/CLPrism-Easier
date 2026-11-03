@@ -13,6 +13,7 @@ Cleanroom のバージョン一覧は Prism の meta サーバーではなく、
 - 普通の Forge が入っているインスタンスでは、置き換える前に確認する
 - Cleanroom の LWJGL 3 とは別の LWJGL 3（`org.lwjgl3`）が残っていたら外す。手で書き換えた Minecraft がそれを要求している場合は、確認してから Minecraft を元に戻す（2 つの LWJGL が混ざると起動時にクラッシュするため）
 - インストール後、Cleanroom が必要とする Java（25）が使われるよう、自動の Java 選択をやり直す
+- Version 画面で Cleanroom を選んで「バージョン変更」を押すと、Cleanroom のバージョン一覧から選び直せる（同じバージョンを入れ直して修復することもできる）
 - Version 画面の Revert で通常の Forge に戻り、Remove で Cleanroom・LWJGL 3・空 jar がまとめて消える
 
 ほかのローダー（Fabric、LiteLoader など）との衝突チェックは対応していません。
