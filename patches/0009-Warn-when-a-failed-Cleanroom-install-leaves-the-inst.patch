@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tene11 <tene11@localhost>
+Date: Sun, 8 Nov 2026 07:40:46 +0000
+Subject: [PATCH] Warn when a failed Cleanroom install leaves the instance
+ partly changed
+
+Installing or removing Cleanroom changes several components one after
+another and doesn't roll back. If a step fails after the components
+started to change, tell the user that the instance may not start and
+how to fix it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019uQWuKsUBWZSDQz2wK6kp5
+---
+ .../cleanroom/CleanroomInstallTask.cpp        | 19 ++++++++++++++-----
+ 1 file changed, 14 insertions(+), 5 deletions(-)
+
+diff --git a/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp b/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
+index cabea49..511a237 100644
+--- a/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
++++ b/launcher/minecraft/cleanroom/CleanroomInstallTask.cpp
+@@ -51,6 +51,15 @@ bool isSafeUid(const QString& uid)
+     return pattern.match(uid).hasMatch() && !uid.contains("..");
+ }
+ 
++//! Appended to errors that happen after the instance's components were already partly changed.
++//! Nothing is rolled back, so the user has to know the instance may not start as it is.
++QString partlyChanged(const QString& reason)
++{
++    return reason + "\n\n" +
++           QObject::tr("The instance may have been left partly changed and may not start. "
++                       "Check its components on the Version page, or install Cleanroom again.");
++}
++
+ QString describeProblems(const VersionFilePtr& file)
+ {
+     QStringList lines;
+@@ -211,13 +220,13 @@ bool installPackage(PackProfile* profile, const InstancePackage& package, QStrin
+     // 2. replace the components (Forge / LWJGL 2 -> Cleanroom / LWJGL 3)
+     for (const auto& patch : package.patches) {
+         if (profile->getComponent(patch.uid) && !profile->remove(patch.uid)) {
+-            return fail(QObject::tr("Couldn't remove the existing %1 component.").arg(patch.uid));
++            return fail(partlyChanged(QObject::tr("Couldn't remove the existing %1 component.").arg(patch.uid)));
+         }
+ 
+         const QString target = profile->patchFilePathForUid(patch.uid);
+         if (!FS::ensureFilePathExists(target) || (QFileInfo::exists(target) && !QFile::remove(target)) ||
+             !QFile::copy(patch.jsonPath, target)) {
+-            return fail(QObject::tr("Couldn't write %1.").arg(target));
++            return fail(partlyChanged(QObject::tr("Couldn't write %1.").arg(target)));
+         }
+ 
+         profile->appendComponent(makeShared<Component>(profile, patch.uid, patch.file));
+@@ -228,10 +237,10 @@ bool installPackage(PackProfile* profile, const InstancePackage& package, QStrin
+     if (lwjglConflict.revertMinecraft) {
+         const auto minecraft = profile->getComponent(MINECRAFT_UID);
+         if (!minecraft || !minecraft->revert())
+-            return fail(QObject::tr("Couldn't revert Minecraft to its original version."));
++            return fail(partlyChanged(QObject::tr("Couldn't revert Minecraft to its original version.")));
+     }
+     if (lwjglConflict.removeOtherLwjgl && profile->getComponent(OTHER_LWJGL_UID) && !profile->remove(OTHER_LWJGL_UID)) {
+-        return fail(QObject::tr("Couldn't remove the %1 component.").arg(OTHER_LWJGL_UID));
++        return fail(partlyChanged(QObject::tr("Couldn't remove the %1 component.").arg(OTHER_LWJGL_UID)));
+     }
+ 
+     profile->invalidateLaunchProfile();
+@@ -287,7 +296,7 @@ bool uninstall(PackProfile* profile, const QString& forgeVersion, QString* error
+ 
+     // the LWJGL 3 patch that came with Cleanroom. Minecraft requires org.lwjgl, so resolving the profile adds LWJGL 2 back.
+     if (const auto lwjgl = profile->getComponent(LWJGL_UID); lwjgl && lwjgl->isCustom() && !profile->remove(LWJGL_UID))
+-        return fail(QObject::tr("Couldn't remove the LWJGL 3 component."));
++        return fail(partlyChanged(QObject::tr("Couldn't remove the LWJGL 3 component.")));
+ 
+     const QString libDir = profile->instance()->getLocalLibraryPath();
+     for (const QString& jar : stubJars) {

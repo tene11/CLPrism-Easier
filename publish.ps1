@@ -11,6 +11,7 @@
     PrismLauncher フォルダ (ビルド用のソース) や vcpkg、ログは .gitignore で除外されます。
 #>
 param(
+    # 初回に作るリポジトリの名前 (2 回目以降は origin の実際のリポジトリが使われる)
     [string]$RepoName = "prism-cleanroom",
     [ValidateSet("private", "public")]
     [string]$Visibility = "private"
@@ -101,8 +102,12 @@ try {
         } else {
             Run git push --set-upstream origin main
         }
+        # 実際の公開先 (origin) を調べる。リポジトリを GitHub で改名していても、ここに書いた名前と違っていても正しく扱える
+        $repo = (& gh repo view --json nameWithOwner --jq .nameWithOwner).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $repo) { throw "公開先のリポジトリを確認できませんでした。" }
+
         # Prism の新バージョンを見つけた自動チェックが、プルリクエストを作れるようにする
-        Run gh api --method PUT "repos/$login/$RepoName/actions/permissions/workflow" -f default_workflow_permissions=write -F can_approve_pull_request_reviews=true
+        Run gh api --method PUT "repos/$repo/actions/permissions/workflow" -f default_workflow_permissions=write -F can_approve_pull_request_reviews=true
 
         $url = (& gh repo view --json url --jq .url).Trim()
         Write-Host ""
