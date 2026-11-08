@@ -7,6 +7,8 @@
 Prism Launcher 本体のソースは含まず、`patches/` にある差分だけを置いています。
 Cleanroom のバージョン一覧は Prism の meta サーバーではなく、Cleanroom の GitHub Releases から取得します。
 
+コードの仕組みは [docs/コードの解説.md](docs/コードの解説.md) にまとめています。
+
 ## できること
 
 - ローダー画面に「Cleanroom」タブが増え、GitHub Releases にあるバージョンから選んでインストールできる
