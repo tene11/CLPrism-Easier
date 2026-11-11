@@ -1,0 +1,290 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tene11 <tene11@localhost>
+Date: Thu, 12 Nov 2026 01:10:56 +0900
+Subject: [PATCH] Choose Cleanroom on the New Instance dialog's Custom page
+
+- Add a "Cleanroom" mod loader choice next to Forge. Its versions come
+  from the same GitHub Releases list as the Install Loader dialog, and
+  only Minecraft 1.12.2 has any.
+- Add Cleanroom::CreationTask: it builds the vanilla instance like
+  VanillaCreationTask, then downloads and installs the Cleanroom MMC
+  instance zip into it with Cleanroom::InstallTask before the game
+  files are downloaded. A new instance has no Forge or other LWJGL 3,
+  so none of the Install Loader dialog's questions are needed.
+---
+ launcher/CMakeLists.txt                       |  2 +
+ .../cleanroom/CleanroomCreationTask.cpp       | 90 +++++++++++++++++++
+ .../cleanroom/CleanroomCreationTask.h         | 46 ++++++++++
+ launcher/ui/pages/modplatform/CustomPage.cpp  | 28 +++++-
+ launcher/ui/pages/modplatform/CustomPage.h    |  6 ++
+ launcher/ui/pages/modplatform/CustomPage.ui   | 10 +++
+ 6 files changed, 180 insertions(+), 2 deletions(-)
+ create mode 100644 launcher/minecraft/cleanroom/CleanroomCreationTask.cpp
+ create mode 100644 launcher/minecraft/cleanroom/CleanroomCreationTask.h
+
+diff --git a/launcher/CMakeLists.txt b/launcher/CMakeLists.txt
+index 6957ae1..39a3f7b 100644
+--- a/launcher/CMakeLists.txt
++++ b/launcher/CMakeLists.txt
+@@ -296,6 +296,8 @@ set(MINECRAFT_SOURCES
+     minecraft/cleanroom/CleanroomVersionList.h
+     minecraft/cleanroom/CleanroomInstallTask.cpp
+     minecraft/cleanroom/CleanroomInstallTask.h
++    minecraft/cleanroom/CleanroomCreationTask.cpp
++    minecraft/cleanroom/CleanroomCreationTask.h
+ 
+     minecraft/PackProfile.cpp
+     minecraft/PackProfile.h
+diff --git a/launcher/minecraft/cleanroom/CleanroomCreationTask.cpp b/launcher/minecraft/cleanroom/CleanroomCreationTask.cpp
+new file mode 100644
+index 0000000..8d39e79
+--- /dev/null
++++ b/launcher/minecraft/cleanroom/CleanroomCreationTask.cpp
+@@ -0,0 +1,90 @@
++// SPDX-License-Identifier: GPL-3.0-only
++/*
++ *  Prism Launcher - Minecraft Launcher
++ *
++ *  This program is free software: you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation, version 3.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++#include "CleanroomCreationTask.h"
++
++#include <QEventLoop>
++
++#include <utility>
++
++#include "FileSystem.h"
++#include "minecraft/MinecraftInstance.h"
++#include "minecraft/PackProfile.h"
++#include "minecraft/cleanroom/CleanroomInstallTask.h"
++#include "settings/INISettingsObject.h"
++
++namespace Cleanroom {
++
++CreationTask::CreationTask(BaseVersion::Ptr minecraft, Version::Ptr cleanroom)
++    : InstanceCreationTask(), m_minecraft(std::move(minecraft)), m_cleanroom(std::move(cleanroom))
++{}
++
++bool CreationTask::abort()
++{
++    if (!canAbort())
++        return false;
++
++    if (m_installTask && m_installTask->isRunning())
++        m_installTask->abort();
++
++    return InstanceCreationTask::abort();
++}
++
++std::unique_ptr<MinecraftInstance> CreationTask::createInstance()
++{
++    setStatus(tr("Creating instance from version %1").arg(m_minecraft->name()));
++
++    auto inst = std::make_unique<MinecraftInstance>(
++        m_globalSettings, std::make_unique<INISettingsObject>(FS::PathCombine(m_stagingPath, "instance.cfg")), m_stagingPath);
++    SettingsObject::Lock lock(inst->settings());
++
++    // the same vanilla instance VanillaCreationTask makes
++    auto components = inst->getPackProfile();
++    components->buildingFromScratch();
++    components->setComponentVersion("net.minecraft", m_minecraft->descriptor(), true);
++
++    inst->setName(name());
++    inst->setIconKey(m_instIcon);
++
++    // then Cleanroom on top of it. There is no Forge or other LWJGL 3 to replace in a new instance,
++    // so none of the questions the Install Loader dialog asks are needed here.
++    m_installTask = makeShared<InstallTask>(components, m_cleanroom);
++    connect(m_installTask.get(), &Task::status, this, &Task::setStatus);
++    connect(m_installTask.get(), &Task::progress, this, &Task::setProgress);
++
++    QEventLoop loop;
++    connect(m_installTask.get(), &Task::finished, &loop, &QEventLoop::quit);
++    m_installTask->start();
++    if (m_installTask->isRunning())
++        loop.exec();
++
++    const bool succeeded = m_installTask->wasSuccessful();
++    const QString reason = m_installTask->failReason();
++    m_installTask.reset();
++
++    if (m_abort)
++        return nullptr;
++    if (!succeeded) {
++        //: %1 is the Cleanroom version, %2 the reason
++        setError(tr("Couldn't install Cleanroom %1:\n%2").arg(m_cleanroom->tag, reason));
++        return nullptr;
++    }
++
++    return inst;
++}
++
++}  // namespace Cleanroom
+diff --git a/launcher/minecraft/cleanroom/CleanroomCreationTask.h b/launcher/minecraft/cleanroom/CleanroomCreationTask.h
+new file mode 100644
+index 0000000..edab3a5
+--- /dev/null
++++ b/launcher/minecraft/cleanroom/CleanroomCreationTask.h
+@@ -0,0 +1,46 @@
++// SPDX-License-Identifier: GPL-3.0-only
++/*
++ *  Prism Launcher - Minecraft Launcher
++ *
++ *  This program is free software: you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation, version 3.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include "InstanceCreationTask.h"
++#include "minecraft/cleanroom/CleanroomVersionList.h"
++
++namespace Cleanroom {
++
++class InstallTask;
++
++//! Creates a new instance with Minecraft \p minecraft and Cleanroom \p cleanroom, for the "Custom" page
++//! of the New Instance dialog. The vanilla instance is built first, then the Cleanroom MMC instance zip
++//! is downloaded and installed into it the same way the Install Loader dialog does it.
++class CreationTask final : public InstanceCreationTask {
++    Q_OBJECT
++   public:
++    CreationTask(BaseVersion::Ptr minecraft, Version::Ptr cleanroom);
++
++    bool abort() override;
++
++   protected:
++    std::unique_ptr<MinecraftInstance> createInstance() override;
++
++   private:
++    BaseVersion::Ptr m_minecraft;
++    Version::Ptr m_cleanroom;
++    shared_qobject_ptr<InstallTask> m_installTask;
++};
++
++}  // namespace Cleanroom
+diff --git a/launcher/ui/pages/modplatform/CustomPage.cpp b/launcher/ui/pages/modplatform/CustomPage.cpp
+index f24abf9..7eed9f7 100644
+--- a/launcher/ui/pages/modplatform/CustomPage.cpp
++++ b/launcher/ui/pages/modplatform/CustomPage.cpp
+@@ -44,9 +44,12 @@
+ #include "meta/Index.h"
+ #include "meta/VersionList.h"
+ #include "minecraft/VanillaInstanceCreationTask.h"
++#include "minecraft/cleanroom/CleanroomCreationTask.h"
++#include "minecraft/cleanroom/CleanroomVersionList.h"
+ #include "ui/dialogs/NewInstanceDialog.h"
+ 
+-CustomPage::CustomPage(NewInstanceDialog* dialog, QWidget* parent) : QWidget(parent), dialog(dialog), ui(new Ui::CustomPage)
++CustomPage::CustomPage(NewInstanceDialog* dialog, QWidget* parent)
++    : QWidget(parent), dialog(dialog), ui(new Ui::CustomPage), m_cleanroomVersions(new Cleanroom::VersionList(this))
+ {
+     ui->setupUi(this);
+     connect(ui->versionList, &VersionSelectWidget::selectedVersionChanged, this, &CustomPage::setSelectedVersion);
+@@ -61,6 +64,7 @@ CustomPage::CustomPage(NewInstanceDialog* dialog, QWidget* parent) : QWidget(par
+     connect(ui->loaderVersionList, &VersionSelectWidget::selectedVersionChanged, this, &CustomPage::setSelectedLoaderVersion);
+     connect(ui->noneFilter, &QRadioButton::toggled, this, &CustomPage::loaderFilterChanged);
+     connect(ui->forgeFilter, &QRadioButton::toggled, this, &CustomPage::loaderFilterChanged);
++    connect(ui->cleanroomFilter, &QRadioButton::toggled, this, &CustomPage::loaderFilterChanged);
+     connect(ui->fabricFilter, &QRadioButton::toggled, this, &CustomPage::loaderFilterChanged);
+     connect(ui->quiltFilter, &QRadioButton::toggled, this, &CustomPage::loaderFilterChanged);
+     connect(ui->liteLoaderFilter, &QRadioButton::toggled, this, &CustomPage::loaderFilterChanged);
+@@ -129,6 +133,20 @@ void CustomPage::loaderFilterChanged()
+     } else if (ui->forgeFilter->isChecked()) {
+         ui->loaderVersionList->setExactFilter(BaseVersionList::ParentVersionRole, minecraftVersion);
+         m_selectedLoader = "net.minecraftforge";
++    } else if (ui->cleanroomFilter->isChecked()) {
++        // Cleanroom's versions don't come from the meta server; only Minecraft 1.12.2 has any
++        ui->loaderVersionList->setExactFilter(BaseVersionList::ParentVersionRole, minecraftVersion);
++        m_selectedLoader = Cleanroom::PAGE_ID;
++        ui->loaderVersionList->initialize(m_cleanroomVersions);
++        ui->loaderVersionList->selectRecommended();
++        if (minecraftVersion != Cleanroom::MINECRAFT_VERSION)
++            ui->loaderVersionList->setEmptyString(
++                //: %1 is the Minecraft version Cleanroom supports (1.12.2), %2 the selected one
++                tr("Cleanroom only supports Minecraft %1 (Minecraft %2 is selected).")
++                    .arg(QString(Cleanroom::MINECRAFT_VERSION), minecraftVersion));
++        else
++            ui->loaderVersionList->setEmptyString(tr("No versions are currently available for Minecraft %1").arg(minecraftVersion));
++        return;
+     } else if (ui->fabricFilter->isChecked()) {
+         // FIXME: dirty hack because the launcher is unaware of Fabric's dependencies
+         if (Version(minecraftVersion) >= Version("1.14"))  // Fabric/Quilt supported
+@@ -196,7 +214,13 @@ void CustomPage::suggestCurrent()
+     }
+ 
+     // There isn't a selected version if the version list is empty
+-    if (ui->loaderVersionList->selectedVersion() == nullptr)
++    if (ui->cleanroomFilter->isChecked()) {
++        // Cleanroom installs from its own MMC instance zip, not as a meta server component
++        if (auto cleanroom = std::dynamic_pointer_cast<Cleanroom::Version>(ui->loaderVersionList->selectedVersion()))
++            dialog->setSuggestedPack(m_selectedVersion->descriptor(), new Cleanroom::CreationTask(m_selectedVersion, cleanroom));
++        else
++            dialog->setSuggestedPack(m_selectedVersion->descriptor(), new VanillaCreationTask(m_selectedVersion));
++    } else if (ui->loaderVersionList->selectedVersion() == nullptr)
+         dialog->setSuggestedPack(m_selectedVersion->descriptor(), new VanillaCreationTask(m_selectedVersion));
+     else {
+         dialog->setSuggestedPack(m_selectedVersion->descriptor(),
+diff --git a/launcher/ui/pages/modplatform/CustomPage.h b/launcher/ui/pages/modplatform/CustomPage.h
+index 2bfb1de..93f18a2 100644
+--- a/launcher/ui/pages/modplatform/CustomPage.h
++++ b/launcher/ui/pages/modplatform/CustomPage.h
+@@ -47,6 +47,10 @@ class CustomPage;
+ 
+ class NewInstanceDialog;
+ 
++namespace Cleanroom {
++class VersionList;
++}
++
+ class CustomPage : public QWidget, public BasePage {
+     Q_OBJECT
+ 
+@@ -87,4 +91,6 @@ class CustomPage : public QWidget, public BasePage {
+     BaseVersion::Ptr m_selectedVersion;
+     BaseVersion::Ptr m_selectedLoaderVersion;
+     QString m_selectedLoader;
++    //! Cleanroom isn't on the meta server, so its versions come from their own list (GitHub Releases).
++    Cleanroom::VersionList* m_cleanroomVersions = nullptr;
+ };
+diff --git a/launcher/ui/pages/modplatform/CustomPage.ui b/launcher/ui/pages/modplatform/CustomPage.ui
+index 39d9aa6..628a171 100644
+--- a/launcher/ui/pages/modplatform/CustomPage.ui
++++ b/launcher/ui/pages/modplatform/CustomPage.ui
+@@ -209,6 +209,16 @@
+              </attribute>
+             </widget>
+            </item>
++           <item>
++            <widget class="QRadioButton" name="cleanroomFilter">
++             <property name="text">
++              <string>Cleanroom</string>
++             </property>
++             <attribute name="buttonGroup">
++              <string notr="true">loaderBtnGroup</string>
++             </attribute>
++            </widget>
++           </item>
+            <item>
+             <widget class="QRadioButton" name="fabricFilter">
+              <property name="text">
