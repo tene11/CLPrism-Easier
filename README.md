@@ -1,91 +1,81 @@
 # CLPrism Easier
 
-[Prism Launcher](https://github.com/PrismLauncher/PrismLauncher) の「Mod ローダーのインストール」画面で、
-[Cleanroom](https://github.com/CleanroomMC/Cleanroom)（Minecraft 1.12.2 向けの Forge 後継ローダー）を
-選んでインストールできるようにした非公式版です。
-
 > [!IMPORTANT]
-> これは **Prism Launcher 公式とも CleanroomMC とも無関係の非公式版** です。
-> 不具合は本家ではなく、このリポジトリの [Issues](../../issues) に報告してください。
+> これは [Prism Launcher](https://github.com/PrismLauncher/PrismLauncher) の**非公式**改造版です。
+> Prism Launcher 公式とも CleanroomMC とも関係ありません。この版で起きた問題は本家ではなく、このリポジトリの Issues に報告してください。
 
-## できること
+Prism Launcher の「Mod ローダーのインストール」画面で、
+[Cleanroom](https://github.com/CleanroomMC/Cleanroom)（Minecraft 1.12.2 向けの Forge 後継ローダー）を
+選べるようにした Prism Launcher のフォークです。
 
-- ローダー画面に「Cleanroom」タブが増え、Cleanroom の GitHub Releases にあるバージョンから選んでインストールできる
-- 普通の Forge が入っているインスタンスでは、置き換える前に確認する
-- Cleanroom と衝突する別の LWJGL 3 が残っていたら外す（混ざると起動時にクラッシュするため）
-- インストール後、Cleanroom が必要とする Java（25）が使われるよう、自動の Java 選択をやり直す
-- Version 画面の「バージョン変更」で Cleanroom のバージョンを選び直せる（同じバージョンの入れ直しで修復も可能）
-- Version 画面の Revert で通常の Forge に戻り、Remove で Cleanroom 関連をまとめて削除できる
+## 概要
+
+- ローダー画面に「Cleanroom」タブが増え、Cleanroom の GitHub Releases にあるバージョンから選んでインストールできます。
+- Version 画面から、Cleanroom のバージョン変更・入れ直し（修復）ができます。
+- 本家からの変更は Cleanroom 関連の部分だけなので、本家 Prism Launcher のインスタンスや設定をそのまま使えます。
+- 変更内容はパッチとしても公開しています。自分でパッチを当ててビルドすることもできますが、Qt などのビルド環境が必要なので、通常はビルド済み版をおすすめします。
+
+### 対応予定の機能
+
+- 1.12.2 のライブラリ mod を、非公式の推奨版に置き換える機能
+- MixinBooter への依存を要求しないようにする機能
 
 Fabric や LiteLoader など、ほかのローダーとの衝突チェックには対応していません。
 
-## 対応環境
+## 対応状況
 
-| OS | 対応 |
+| OS | 状況 |
 |---|---|
-| Windows（x64） | 対応（ポータブル版 zip） |
-| Linux / Steam Deck | 対応予定 |
-| macOS | **非対応**（動作確認できる環境がないため） |
+| Windows (x64) | 対応。ビルド済みのポータブル版を Releases で配布 |
+| Linux | 準備中 |
+| macOS | **非対応**（macOS の環境がないため、対応する予定はありません） |
 
 | 項目 | バージョン |
 |---|---|
-| ベースの Prism Launcher | `PRISM_VERSION` に記載（現在 11.1.1） |
-| Cleanroom | GitHub Releases にある MMC インスタンス zip（`cleanroom-<version>.zip`）付きのリリース |
+| Prism Launcher | [`PRISM_VERSION`](PRISM_VERSION) に記載 |
+| Cleanroom | GitHub Releases に MMC インスタンス zip（`cleanroom-<version>.zip`）が付いているリリース |
 
-## インストール（Windows）
+## インストール方法（Windows）
 
-1. [Releases](../../releases) から、いちばん新しい `PrismLauncher-<バージョン>-Cleanroom-Windows-x64-….zip` をダウンロードする
-2. 空のフォルダに展開して `prismlauncher.exe` を起動する
+1. このリポジトリの **Releases** から、いちばん新しい zip をダウンロードする
+2. 空のフォルダに展開して、`prismlauncher.exe` を起動する
 
-今使っているポータブル版 Prism のフォルダに上書きで展開すると、インスタンスやアカウントをそのまま引き継げます。
-念のため、上書きする前にフォルダごとバックアップを取っておくことをおすすめします。
+本家 Prism のインスタンスを使いたい場合は、本家のデータフォルダ（`instances` など）をコピーしてください。
+上書きする前に、データをバックアップしておくことをおすすめします。
+<!-- TODO: 本家のアップデーターで上書きされないようにする対応ができたら、ここに書く -->
 
-### 注意
+## 自分でパッチを当てる場合
 
-- Cleanroom 本体は同梱していません。インストール時に Cleanroom の GitHub Releases から直接ダウンロードします
-- Prism 内の更新機能で本家の新しいバージョンに更新すると、Cleanroom の機能がなくなる場合があります。更新はこのリポジトリの Releases から行ってください
-- 本家 Prism Launcher の新しいバージョンが出ても、パッチの修正が必要な場合は対応が遅れることがあります
+`patches/` に、Prism Launcher 本体への変更が `git format-patch` 形式で入っています。
+Prism Launcher 本体のソースはこのリポジトリには入っていません。
 
-## 自分でビルドする
-
-このリポジトリには Prism Launcher 本体のソースは含まれず、`patches/` に差分だけを置いています。
-
-Windows では `build.bat` をダブルクリックすると、必要なツール（Visual Studio Build Tools、Java、Qt、vcpkg）の準備から
-ビルドまでを行い、結果が `PrismLauncher\install` にできます。
-
-手動で行う場合:
-
-```powershell
-# 1. 本家を取得してパッチを当てる（PrismLauncher フォルダができます）
-.\apply.ps1
-
-# 2. 「x64 Native Tools Command Prompt for VS 2022」でビルドする
+```sh
+git clone https://github.com/PrismLauncher/PrismLauncher.git
 cd PrismLauncher
-cmake --preset windows_msvc -D CMAKE_PREFIX_PATH="C:\Qt\6.10.2\msvc2022_64"
-cmake --build --preset windows_msvc --config Release
-cmake --install build --config Release
-cmake --install build --config Release --component portable
+git checkout <PRISM_VERSION に書かれたタグ>
+git am /path/to/patches/*.patch
 ```
 
-パッチの中身は [docs/コードの解説.md](docs/コードの解説.md) で解説しています。
-開発中の変更は `dev` ブランチにあります。
+パッチを当てたあとのビルド方法は、本家の [ビルド手順](https://prismlauncher.org/wiki/development/build-instructions/) と同じです。
+Windows では、同梱の `build.bat` を使うと、必要なツールの準備からビルドまでをまとめて行えます。
 
-## ファイル構成
+開発者向けの情報は [docs/開発の手順.md](docs/開発の手順.md) と [docs/コードの解説.md](docs/コードの解説.md) にあります。
 
-| パス | 内容 |
-|---|---|
-| `patches/` | Prism Launcher への変更（`git format-patch` 形式） |
-| `PRISM_VERSION` | パッチの対象になる Prism Launcher のタグ |
-| `build.bat` / `build.ps1` | 必要なツールの準備から手元でのビルドまでを一括で行う |
-| `apply.ps1` | 本家の取得とパッチ適用 |
-| `.github/workflows/` | Windows 版のビルドと Release 作成、本家の新バージョンへの追従 |
-| `docs/` | コードの解説 |
+## 本家の更新への追従について
+
+Prism Launcher の新しいバージョンが出たら、パッチが当たるかを毎日自動で確認しています。
+パッチがそのまま当たらない場合は手で修正するため、対応が遅れることがあります。
 
 ## ライセンス
 
 Prism Launcher と同じ GPL-3.0 です（[LICENSE](LICENSE)）。
 
-Cleanroom は CleanroomMC のソフトウェアで、Cleanroom 本体はこのリポジトリや Releases には含まれていません。
+Cleanroom 本体はこのリポジトリにも Releases にも含まれていません。インストール時に Cleanroom の GitHub Releases から直接ダウンロードします。
 
-Prism の README にあるとおり、`CMakeLists.txt` に含まれる API キーを外さずにビルドした場合は、
-それぞれの利用規約に同意したことになります。自分でビルドしたものを配布する場合は注意してください。
+## クレジット
+
+- [Prism Launcher](https://prismlauncher.org/) — このフォークの元になったLauncher
+- [CleanroomMC](https://cleanroommc.com/) — Cleanroom ローダー、およびローダー画面で使っている Cleanroom のロゴ
+
+<!-- TODO: 本家 README のフォーク向けの注意（名前・ロゴ、API キー、Microsoft ログイン用のクライアント ID）を確認して、
+     ビルド済み版で何を差し替えたかをここに書く -->
