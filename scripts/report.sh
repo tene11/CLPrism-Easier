@@ -29,13 +29,13 @@ Prism Launcher **$TAG** が出たので、パッチを当て直しました（�
 - パッチはそのまま当たりました
 - Windows 版のビルドとテストも通りました（[実行結果]($run_url)。ビルドした zip はそこから先に試せます）
 
-マージすると、新しいバージョンがビルドされて Releases に置かれます。
+マージすると dev に入ります。Releases に置くには、dev を main にマージしてください。
 BODY
 )"
     if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
         gh pr edit "$branch" --body "$body"
     else
-        gh pr create --base main --head "$branch" --title "Prism Launcher $TAG に追従" --body "$body"
+        gh pr create --base dev --head "$branch" --title "Prism Launcher $TAG に追従" --body "$body"
     fi
     ;;
 issue)

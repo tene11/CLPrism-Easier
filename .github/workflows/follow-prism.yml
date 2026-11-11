@@ -1,6 +1,6 @@
 # Checks every day whether Prism Launcher has a new release and tries the patches on it.
-#   - patches apply and the Windows build + tests pass -> a pull request with the updated patches
-#     (merging it builds the new version and publishes it as a GitHub Release)
+#   - patches apply and the Windows build + tests pass -> a pull request to dev with the updated patches
+#     (merging dev into main later builds the new version and publishes it as a GitHub Release)
 #   - patches don't apply, or the build fails          -> an issue explaining what failed
 # It can also be started by hand from the Actions tab ("Run workflow").
 name: Follow Prism Launcher releases
@@ -39,7 +39,10 @@ jobs:
       tag: ${{ steps.check.outputs.tag }}
       current: ${{ steps.check.outputs.current }}
     steps:
+      # The new patches go to dev; main only gets them when dev is merged for a release.
       - uses: actions/checkout@v4
+        with:
+          ref: dev
 
       - name: Try the patches on the new release
         id: check
@@ -80,6 +83,8 @@ jobs:
       CURRENT: ${{ needs.check.outputs.current }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: dev
 
       - name: Open a pull request
         if: needs.build.result == 'success'
