@@ -1,122 +1,123 @@
 # CLPrism Easier
 
+**English** | [日本語](README.ja.md)
+
 > [!IMPORTANT]
-> これは [Prism Launcher](https://github.com/PrismLauncher/PrismLauncher) の**非公式**改造版です。
-> Prism Launcher 公式とも CleanroomMC とも関係ありません。この版で起きた問題は本家ではなく、このリポジトリの Issues に報告してください。
+> This is an **unofficial** modified version of [Prism Launcher](https://github.com/PrismLauncher/PrismLauncher).
+> It is not affiliated with Prism Launcher or CleanroomMC. Please report problems with this version to this repository's Issues, not to Prism Launcher.
 
-Prism Launcher の「Mod ローダーのインストール」画面で、
-[Cleanroom](https://github.com/CleanroomMC/Cleanroom)（Minecraft 1.12.2 向けの Forge 後継ローダー）を
-選べるようにした Prism Launcher のフォークです。
+A fork of Prism Launcher that lets you choose [Cleanroom](https://github.com/CleanroomMC/Cleanroom)
+(a Forge-based mod loader for Minecraft 1.12.2) in Prism Launcher's "Install Loader" dialog.
 
-## 概要
+## Features
 
-- ローダー画面に「Cleanroom」タブが増え、Cleanroom の GitHub Releases にあるバージョンから選んでインストールできます。
-- インスタンスの新規作成画面（「カスタム」）でも、Mod ローダーに Cleanroom を選んで、最初から Cleanroom 入りのインスタンスを作れます。
-- Version 画面から、Cleanroom のバージョン変更・入れ直し（修復）ができます。
-- 本家からの変更は Cleanroom 関連の部分だけなので、本家 Prism Launcher のインスタンスや設定をそのまま使えます。
-- 変更内容はパッチとして公開しています。今のところ、このリポジトリをフォークして GitHub Actions でビルドする方法をおすすめしています（[インストール方法](#インストール方法windows)）。
+- Adds a "Cleanroom" tab to the Install Loader dialog, where you can pick and install any version from Cleanroom's GitHub Releases.
+- On the New Instance dialog ("Custom"), you can choose Cleanroom as the mod loader and create an instance with Cleanroom from the start.
+- From the Version page, you can change the Cleanroom version or reinstall (repair) it.
+- Only the Cleanroom-related parts are changed, so your existing Prism Launcher instances and settings work as they are.
+- The changes are published as patches. For now, the recommended way to get it is to fork this repository and build it with GitHub Actions (see [Installation](#installation-windows)).
 
-### 対応予定の機能
+### Planned features
 
-- 1.12.2 のライブラリ mod を、非公式の推奨版に置き換える機能
-- MixinBooter への依存を要求しないようにする機能
+- Replace 1.12.2 library mods with recommended unofficial versions
+- Stop requiring MixinBooter as a dependency
 
-Fabric や LiteLoader など、ほかのローダーとの衝突チェックには対応していません。
+Conflict checks with other loaders such as Fabric or LiteLoader are not supported.
 
-## 対応状況
+## Support
 
-| OS | 状況 |
+| OS | Status |
 |---|---|
-| Windows (x64) | 対応。フォーク＋GitHub Actions で自分でビルドする方法を推奨（ビルド済み版は準備中） |
-| Linux | 準備中 |
-| macOS | **非対応**（macOS の環境がないため、対応する予定はありません） |
+| Windows (x64) | Supported. Building it yourself with a fork + GitHub Actions is recommended (prebuilt version coming later) |
+| Linux | In preparation |
+| macOS | **Not supported** (no macOS environment to test on, and no plans to support it) |
 
-| 項目 | バージョン |
+| Item | Version |
 |---|---|
-| Prism Launcher | [`PRISM_VERSION`](PRISM_VERSION) に記載 |
-| Cleanroom | GitHub Releases に MMC インスタンス zip（`cleanroom-<version>.zip`）が付いているリリース |
+| Prism Launcher | See [`PRISM_VERSION`](PRISM_VERSION) |
+| Cleanroom | Releases on GitHub that include an MMC instance zip (`cleanroom-<version>.zip`) |
 
-## インストール方法（Windows）
+## Installation (Windows)
 
-### おすすめ：フォークして GitHub Actions でビルドする
+### Recommended: fork and build with GitHub Actions
 
-ビルド済み版を配布するには、Microsoft ログイン用のクライアント ID と CurseForge の API キーを自分で用意する必要があり、現在申請中です（[API キーについて](#api-キーについて)）。
-それまでは、各自のフォークでビルドする方法をおすすめします。作者自身もこの方法で使っています。
+Distributing prebuilt versions requires our own Microsoft login client ID and CurseForge API key, which are still being applied for (see [About the API keys](#about-the-api-keys)).
+Until then, we recommend building it in your own fork. The author uses it this way too.
 
-必要なもの：GitHub アカウント（無料）。PC にビルド環境を入れる必要はありません。
+What you need: a GitHub account (free). You don't need to install any build tools on your PC.
 
-1. このリポジトリのページ右上の **Fork** を押し、**Create fork** でフォークを作る
-2. フォークしたリポジトリの **Actions** タブを開き、**I understand my workflows, go ahead and enable them** を押す
-   （フォーク直後は Actions が無効になっています）
-3. 左の一覧から **Build for Windows** を選び、**Run workflow** → ブランチは `main` のまま → **Run workflow** を押す
-4. ビルドが終わるまで待つ（時間がかかります。目安は数十分〜1時間以上）
-5. 終わった実行を開き、ページ下部の **Artifacts** から `PrismLauncher-Cleanroom-Windows-x64` をダウンロードする
-   （zip の中に、さらにポータブル版の zip が入っています）
-6. 中の zip を空のフォルダに展開して、`prismlauncher.exe` を起動する
+1. Click **Fork** at the top right of this repository's page, then **Create fork**
+2. Open the **Actions** tab of your fork and click **I understand my workflows, go ahead and enable them**
+   (Actions are disabled right after forking)
+3. Select **Build for Windows** in the list on the left, click **Run workflow**, keep the branch as `main`, and click **Run workflow**
+4. Wait for the build to finish (it takes a while — roughly tens of minutes to over an hour)
+5. Open the finished run and download `PrismLauncher-Cleanroom-Windows-x64` from **Artifacts** at the bottom of the page
+   (the download is a zip that contains the portable zip)
+6. Extract the inner zip into an empty folder and run `prismlauncher.exe`
 
-- Artifacts の保存期間は **30 日**です。期限が切れたら、もう一度 Run workflow してください。
-- 新しいバージョンに更新するときは、フォークのページで **Sync fork** → **Update branch** を押してから、もう一度 Run workflow します。
-- フォークでは Releases の作成や、本家の更新確認（Follow Prism Launcher releases）は動きません。
-- **自分でビルドしたものを、他の人に配布しないでください**（理由は [API キーについて](#api-キーについて)）。
+- Artifacts are kept for **30 days**. After they expire, just run the workflow again.
+- To update to a new version, click **Sync fork** → **Update branch** on your fork's page, then run the workflow again.
+- In a fork, creating Releases and the daily check for new Prism versions (Follow Prism Launcher releases) don't run.
+- **Please don't share your build with other people** (see [About the API keys](#about-the-api-keys) for why).
 
-本家 Prism のインスタンスを使いたい場合は、本家のデータフォルダ（`instances` など）をコピーしてください。
-上書きする前に、データをバックアップしておくことをおすすめします。
-<!-- TODO: 本家のアップデーターで上書きされないようにする対応ができたら、ここに書く -->
+To use your instances from the official Prism Launcher, copy its data folders (such as `instances`).
+We recommend backing up your data before overwriting anything.
+<!-- TODO: once overwriting by Prism's updater is handled, describe it here -->
 
-### ビルド済み版（準備中）
+### Prebuilt version (coming later)
 
-自前のクライアント ID と API キーが用意できたら、このリポジトリの **Releases** でビルド済みのポータブル版を配布する予定です。
+Once our own client ID and API key are ready, we plan to distribute a prebuilt portable version in this repository's **Releases**.
 
-## 自分でパッチを当てる場合
+## Applying the patches yourself
 
-`patches/` に、Prism Launcher 本体への変更が `git format-patch` 形式で入っています。
-Prism Launcher 本体のソースはこのリポジトリには入っていません。
+`patches/` contains the changes to Prism Launcher in `git format-patch` format.
+The Prism Launcher source code itself is not included in this repository.
 
 ```sh
 git clone https://github.com/PrismLauncher/PrismLauncher.git
 cd PrismLauncher
-git checkout <PRISM_VERSION に書かれたタグ>
+git checkout <the tag written in PRISM_VERSION>
 git am /path/to/patches/*.patch
 ```
 
-パッチを当てたあとのビルド方法は、本家の [ビルド手順](https://prismlauncher.org/wiki/development/build-instructions/) と同じです。
-Windows では、同梱の `build.bat` を使うと、必要なツールの準備からビルドまでをまとめて行えます。
+After applying the patches, build it the same way as the official [build instructions](https://prismlauncher.org/wiki/development/build-instructions/).
+On Windows, the included `build.bat` sets up the required tools and builds it in one go.
 
-開発者向けの情報は [docs/開発の手順.md](docs/開発の手順.md) と [docs/コードの解説.md](docs/コードの解説.md) にあります。
+Information for developers is in [docs/開発の手順.md](docs/開発の手順.md) and [docs/コードの解説.md](docs/コードの解説.md) (Japanese only).
 
-## 本家の更新への追従について
+## Keeping up with Prism Launcher updates
 
-Prism Launcher の新しいバージョンが出たら、パッチが当たるかを毎日自動で確認しています。
-パッチがそのまま当たらない場合は手で修正するため、対応が遅れることがあります。
+When a new version of Prism Launcher is released, a daily automated check tests whether the patches still apply.
+If they don't apply cleanly, they need to be fixed by hand, so support for the new version may be delayed.
 
-## API キーについて
+## About the API keys
 
-本家 Prism Launcher の `CMakeLists.txt` には、Microsoft ログイン用のクライアント ID や CurseForge の API キーが入っています。
-このリポジトリのパッチは、これらのキーを変更しません。そのため、自分でビルドした場合は本家のキーがそのまま使われます。
+Prism Launcher's `CMakeLists.txt` contains a Microsoft login client ID and a CurseForge API key.
+The patches in this repository don't change these keys, so if you build it yourself, Prism Launcher's keys are used as they are.
 
-本家の [README](https://github.com/PrismLauncher/PrismLauncher#forkingredistributingcustom-builds-policy) にあるとおり、キーを外さずにビルドした場合は、次の規約に同意したことになります。
+As stated in Prism Launcher's [README](https://github.com/PrismLauncher/PrismLauncher#forkingredistributingcustom-builds-policy), building without removing the keys means you accept the following terms:
 
 - [Microsoft Identity Platform Terms of Use](https://docs.microsoft.com/en-us/legal/microsoft-identity-platform/terms-of-use)
 - [CurseForge 3rd Party API Terms and Conditions](https://support.curseforge.com/en/support/solutions/articles/9000207405-curse-forge-3rd-party-api-terms-and-conditions)
 
-同意できない場合は、`CMakeLists.txt` の該当するキーを空文字（`""`）にしてからビルドしてください（Microsoft ログインや CurseForge 連携は使えなくなります）。
+If you don't agree, set the corresponding keys in `CMakeLists.txt` to empty strings (`""`) before building (Microsoft login or CurseForge integration will then be unavailable).
 
-また、本家はフォークやカスタムビルドを配布する場合、キーを自分のものに替えるか空にするよう求めています。
-本家のキーが入ったままのビルドを、他の人に配布しないでください。
+Prism Launcher also asks that forks and custom builds that are distributed replace the keys with their own or set them to empty.
+Please don't distribute builds that still contain Prism Launcher's keys.
 
-## ライセンス
+## License
 
-Prism Launcher と同じ GPL-3.0 です（[LICENSE](LICENSE)）。
+GPL-3.0, the same as Prism Launcher ([LICENSE](LICENSE)).
 
-Cleanroom 本体はこのリポジトリにも Releases にも含まれていません。インストール時に Cleanroom の GitHub Releases から直接ダウンロードします。
+Cleanroom itself is included neither in this repository nor in Releases. It is downloaded directly from Cleanroom's GitHub Releases at install time.
 
-ローダー画面で使っている Cleanroom のロゴは、Cleanroom の LGPL-2.1 の部分（`module/forge/`）にあるものを縮小して使っています。
-詳しくは [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) と [licenses/LGPL-2.1.txt](licenses/LGPL-2.1.txt) を見てください。
-ビルドした zip にも同じファイルが入ります。
+The Cleanroom logo shown in the loader dialog is a resized copy of the one in Cleanroom's LGPL-2.1 part (`module/forge/`).
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [licenses/LGPL-2.1.txt](licenses/LGPL-2.1.txt) for details.
+The same files are included in the built zip.
 
-## クレジット
+## Credits
 
-- [Prism Launcher](https://prismlauncher.org/) — このフォークの元になったLauncher
-- [CleanroomMC](https://cleanroommc.com/) — Cleanroom ローダー、およびローダー画面で使っている Cleanroom のロゴ（LGPL-2.1、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）
+- [Prism Launcher](https://prismlauncher.org/) — the launcher this fork is based on
+- [CleanroomMC](https://cleanroommc.com/) — the Cleanroom loader, and the Cleanroom logo used in the loader dialog (LGPL-2.1, [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md))
 
-<!-- TODO: 本家 README のフォーク向けの注意（名前・ロゴ）を確認する。ビルド済み版を出すときは、差し替えたキーをここに書く -->
+<!-- TODO: check Prism Launcher's README notes for forks (name and logo). When releasing prebuilt versions, list the replaced keys here -->
