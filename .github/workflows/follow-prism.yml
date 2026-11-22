@@ -30,6 +30,8 @@ concurrency:
 
 jobs:
   check:
+    # Forks don't need the daily check (it would open pull requests and issues in the fork)
+    if: github.repository == 'tene11/CLPrism-Easier'
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}

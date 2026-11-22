@@ -124,6 +124,9 @@ jobs:
         run: |
           cmake --install build --config $env:BUILD_TYPE
           cmake --install build --config $env:BUILD_TYPE --component portable
+          # The Cleanroom logo is LGPL-2.1: ship its notice and the license text with the build
+          Copy-Item cleanroom\THIRD_PARTY_NOTICES.md install\
+          Copy-Item cleanroom\licenses install\licenses -Recurse -Force
           $name = "PrismLauncher-$env:TAG-Cleanroom-Windows-x64-$env:SHORT.zip"
           Compress-Archive -Path install\* -DestinationPath $name
           "ZIP_NAME=$name" | Out-File -Append $env:GITHUB_ENV
@@ -138,7 +141,9 @@ jobs:
 
   release:
     needs: build
-    if: github.event_name == 'push' || inputs.release
+    # Only the original repository publishes Releases. In a fork, the zip stays an Actions artifact,
+    # so a fork doesn't redistribute builds that still carry Prism Launcher's API keys.
+    if: github.repository == 'tene11/CLPrism-Easier' && (github.event_name == 'push' || inputs.release)
     runs-on: ubuntu-24.04
     permissions:
       contents: write
