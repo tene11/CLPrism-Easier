@@ -134,7 +134,7 @@ jobs:
     needs: build
     # Only the original repository publishes Releases. In a fork, the zip stays an Actions artifact,
     # so a fork doesn't redistribute builds that still carry Prism Launcher's API keys.
-        if: github.repository == 'tene11/CLPrism-Easier' && vars.ENABLE_RELEASE == 'true' && (github.event_name == 'push' || inputs.release)
+    if: github.repository == 'tene11/CLPrism-Easier' && vars.ENABLE_RELEASE == 'true' && (github.event_name == 'push' || inputs.release)
     runs-on: ubuntu-24.04
     permissions:
       contents: write
