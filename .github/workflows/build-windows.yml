@@ -1,8 +1,8 @@
 # Builds Prism Launcher with the Cleanroom patches for Windows (MSVC, x64), the same way
 # Prism Launcher's own CI does, and packs it as a portable zip.
 #   - push to main that changes the patches -> publish the zip as a GitHub Release
-#   - called by follow-prism.yml           -> build the pull request branch to check a new Prism version
 #   - by hand from the Actions tab ("Run workflow")
+# The Prism Launcher version is fixed by PRISM_VERSION; moving to a new version is done by hand.
 name: Build for Windows
 
 on:
@@ -18,15 +18,6 @@ on:
         description: "Publish the zip as a GitHub Release"
         type: boolean
         default: true
-  workflow_call:
-    inputs:
-      ref:
-        description: "Branch of this repository to build"
-        type: string
-        required: true
-      release:
-        type: boolean
-        default: false
 
 # Building runs Prism Launcher's own CI actions and build scripts, so that job can only read this repository.
 # Only the small release job, which runs nothing but "gh release", may write to it.
@@ -45,7 +36,7 @@ jobs:
       short: ${{ steps.source.outputs.short }}
       zip: ${{ steps.package.outputs.zip }}
     concurrency:
-      group: build-windows-${{ inputs.ref || github.ref }}
+      group: build-windows-${{ github.ref }}
       cancel-in-progress: true
     defaults:
       run:
@@ -58,7 +49,7 @@ jobs:
       - name: Check out the patches
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.ref }}
           path: cleanroom
 
       # Prism Launcher goes to the workspace root, where its own CI actions expect it
