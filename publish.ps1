@@ -62,7 +62,7 @@ try {
     $authStatus = (& gh auth status --hostname github.com 2>&1 | Out-String)
     $ErrorActionPreference = $saved
     if ($authStatus -notmatch "workflow") {
-        Write-Host "  自動追従の設定ファイルを上げるため、GitHub の権限を追加します。ブラウザで許可してください。" -ForegroundColor Yellow
+        Write-Host "  GitHub Actions の設定ファイル (.github/workflows) を上げるため、GitHub の権限を追加します。ブラウザで許可してください。" -ForegroundColor Yellow
         & gh auth refresh --hostname github.com --scopes workflow
         if ($LASTEXITCODE -ne 0) { throw "GitHub の権限の追加に失敗しました。" }
     }
@@ -102,13 +102,6 @@ try {
         } else {
             Run git push --set-upstream origin main
         }
-        # 実際の公開先 (origin) を調べる。リポジトリを GitHub で改名していても、ここに書いた名前と違っていても正しく扱える
-        $repo = (& gh repo view --json nameWithOwner --jq .nameWithOwner).Trim()
-        if ($LASTEXITCODE -ne 0 -or -not $repo) { throw "公開先のリポジトリを確認できませんでした。" }
-
-        # Prism の新バージョンを見つけた自動チェックが、プルリクエストを作れるようにする
-        Run gh api --method PUT "repos/$repo/actions/permissions/workflow" -f default_workflow_permissions=write -F can_approve_pull_request_reviews=true
-
         $url = (& gh repo view --json url --jq .url).Trim()
         Write-Host ""
         Write-Host "完了しました: $url" -ForegroundColor Green

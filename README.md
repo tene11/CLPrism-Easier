@@ -57,7 +57,7 @@ What you need: a GitHub account (free). You don't need to install any build tool
 
 - Artifacts are kept for **30 days**. After they expire, just run the workflow again.
 - To update to a new version, click **Sync fork** → **Update branch** on your fork's page, then run the workflow again.
-- In a fork, creating Releases and the daily check for new Prism versions (Follow Prism Launcher releases) don't run.
+- In a fork, creating Releases doesn't run.
 - **Please don't share your build with other people** (see [About the API keys](#about-the-api-keys) for why).
 
 To use your instances from the official Prism Launcher, copy its data folders (such as `instances`).
@@ -87,8 +87,9 @@ Information for developers is in [docs/開発の手順.md](docs/開発の手順.
 
 ## Keeping up with Prism Launcher updates
 
-When a new version of Prism Launcher is released, a daily automated check tests whether the patches still apply.
-If they don't apply cleanly, they need to be fixed by hand, so support for the new version may be delayed.
+CLPrism Easier is pinned to the Prism Launcher version written in [`PRISM_VERSION`](PRISM_VERSION).
+It doesn't follow new upstream releases automatically: the author reapplies the patches by hand and tests them before updating.
+Because of this, support for a new Prism Launcher version may take a while, and CLPrism Easier may stay on an older version for some time.
 
 ## About the API keys
 

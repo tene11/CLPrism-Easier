@@ -37,7 +37,7 @@ function Run {
 function Has($cmd) { [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
 try {
-    # GitHub で Prism の新バージョンへの追従 (プルリクエスト) をマージしていたら、それを取り込む
+    # GitHub でプルリクエストをマージしていたら、それを取り込む
     if ((Test-Path (Join-Path $root ".git")) -and (Has "git")) {
         $saved = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
